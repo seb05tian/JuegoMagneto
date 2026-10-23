@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import type { PokiPlugin } from '@poki/phaser-3';
 import { BALANCE, GAME, type CosmeticId } from '../config/gameConfig';
-import { AudioManager, type SoundCue } from '../audio/audioManager';
+import { AudioManager } from '../audio/audioManager';
 import { TouchControls } from '../input/TouchControls';
 import { PokiBridge, type PokiApi } from '../platform/poki';
 import { ProfileStore } from '../storage/profile';
@@ -10,26 +10,15 @@ import { safeArcadeDeltaMs } from '../game/physicsStep';
 import { magnetTextureKey, type MagnetMood, type MagnetSkin } from '../game/art';
 import { layoutForViewport, type ArenaLayout } from '../game/layout';
 
-type ScreenMode = 'menu' | 'playing' | 'paused' | 'ad' | 'results' | 'cosmetics';
+type ScreenMode = 'menu' | 'instructions' | 'playing' | 'paused' | 'ad' | 'results' | 'cosmetics';
 type BreakAction = 'resume' | 'restart';
 
-declare global {
-  interface Window {
-    __MAGNET_TEST__?: {
-      finish: () => void;
-      retry: () => Promise<void>;
-      start: (seed: number) => void;
-      snapshot: () => Record<string, unknown>;
-    };
-  }
-}
-
 const COSMETIC_INFO: Record<CosmeticId, { name: string; detail: string }> = {
-  classic: { name: 'CLASSIC', detail: 'The original little magnet.' },
-  electric: { name: 'ELECTRIC', detail: 'Collect 100 progress coins.' },
-  gold: { name: 'GOLD', detail: 'Survive for 180 seconds in one run.' },
-  trail: { name: 'STAR TRAIL', detail: 'Reach a x5 combo.' },
-  pulse: { name: 'NOVA PULSE', detail: 'Hit 20 targets across your runs.' },
+  classic: { name: 'CLASSIC', detail: 'The original red and cyan magnet.' },
+  electric: { name: 'ELECTRIC', detail: 'Charged metal with bright lightning accents.' },
+  gold: { name: 'GOLD', detail: 'A polished golden finish.' },
+  trail: { name: 'STAR TRAIL', detail: 'Leaves bright star sparks as you move.' },
+  pulse: { name: 'NOVA PULSE', detail: 'Turns your repel wave into a cyan nova.' },
 };
 
 export class GameScene extends Phaser.Scene {
@@ -42,7 +31,8 @@ export class GameScene extends Phaser.Scene {
   private layout!: ArenaLayout;
   private arenaBackground!: Phaser.GameObjects.Image;
   private arenaFrame!: Phaser.GameObjects.Graphics;
-  private magneticField!: Phaser.GameObjects.Graphics;
+  private motionFeedback!: Phaser.GameObjects.Graphics;
+  private shieldAura!: Phaser.GameObjects.Graphics;
   private playerAvatar!: Phaser.GameObjects.Image;
   private hud!: Phaser.GameObjects.Container;
   private hudGraphics!: Phaser.GameObjects.Graphics;
@@ -73,6 +63,7 @@ export class GameScene extends Phaser.Scene {
   private lockedAtRunStart = new Set<CosmeticId>();
   private lastPersistedSecond = 0;
   private focusBlocked = false;
+  private storageWarningShown = false;
   private lastPhysicsStepCount = 0;
   private maximumStepsObserved = 0;
   private currentAvatarTexture = '';
@@ -81,7 +72,7 @@ export class GameScene extends Phaser.Scene {
   private cosmeticsFrom: 'menu' | 'paused' = 'menu';
   private avatarHurtRemaining = 0;
   private avatarCelebrateRemaining = 0;
-  private readonly magneticDrawnEntityIds: number[] = [];
+  private avatarRespawnRemaining = 0;
   private readonly onWindowBlur = (): void => this.handleFocusLoss();
   private readonly onVisibilityChange = (): void => {
     if (document.hidden) this.handleFocusLoss();
@@ -106,7 +97,8 @@ export class GameScene extends Phaser.Scene {
     this.controls.setLayout(this.layout);
     this.controls.setActive(false);
     this.simulation = new RunSimulation(this, this.controls, (event) => this.onSimulationEvent(event), this.layout);
-    this.magneticField = this.add.graphics().setDepth(22);
+    this.motionFeedback = this.add.graphics().setDepth(22);
+    this.shieldAura = this.add.graphics().setDepth(23).setVisible(false);
     this.playerAvatar = this.add.image(this.layout.width / 2, this.layout.height / 2, 'magnet-classic')
       .setDisplaySize(BALANCE.player.displaySize, BALANCE.player.displaySize).setDepth(24).setVisible(false);
     this.createHud();
@@ -121,7 +113,9 @@ export class GameScene extends Phaser.Scene {
     window.addEventListener('blur', this.onWindowBlur);
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
-    if (import.meta.env.DEV) this.installTestHooks();
+    if (import.meta.env.DEV) {
+      void import('./testHooks').then(({ installTestHooks }) => installTestHooks(this));
+    }
   }
 
   update(time: number, delta: number): void {
@@ -143,14 +137,20 @@ export class GameScene extends Phaser.Scene {
       this.lastPersistedSecond = wholeSecond;
       this.profile.recordAchievements(wholeSecond, this.simulation.state.peakMultiplier);
     }
+    this.syncStorageWarning();
     this.updateHud();
     this.updatePlayerPresentation(safeDelta);
   }
 
   private handleScaleResize(): void {
     if (!this.simulation || !this.controls || !this.overlay) return;
+    const touchDeviceChanged = this.controls.refreshDeviceDetection();
     const next = layoutForViewport(window.innerWidth, window.innerHeight);
-    if (next.width === this.layout.width && next.height === this.layout.height && next.portrait === this.layout.portrait) return;
+    if (next.width === this.layout.width && next.height === this.layout.height && next.portrait === this.layout.portrait) {
+      if (touchDeviceChanged && this.mode === 'menu') this.showMenu();
+      else if (touchDeviceChanged && this.mode === 'instructions') this.showInstructions();
+      return;
+    }
     const orientationChanged = next.portrait !== this.layout.portrait;
     this.layout = next;
     this.simulation.resizeArena(next);
@@ -169,6 +169,7 @@ export class GameScene extends Phaser.Scene {
     }
     switch (this.mode) {
       case 'menu': this.showMenu(); break;
+      case 'instructions': this.showInstructions(); break;
       case 'paused': this.showPause(); break;
       case 'ad': this.showAdWait(); break;
       case 'results':
@@ -273,6 +274,7 @@ export class GameScene extends Phaser.Scene {
     const text = this.add.text(x, y, value, {
       fontFamily: 'Arial, sans-serif', fontSize: `${size}px`, fontStyle: 'bold', color,
       align, stroke: '#081226', strokeThickness: size > 16 ? 3 : 2,
+      resolution: this.uiTextResolution(),
     }).setOrigin(align === 'left' ? 0 : 0.5, 0.5);
     this.hud.add(text);
     return text;
@@ -380,31 +382,50 @@ export class GameScene extends Phaser.Scene {
     const body = player.body as Phaser.Physics.Arcade.Body;
     const speedX = body.velocity.x;
     const speed = Math.hypot(body.velocity.x, body.velocity.y);
+    const wasRespawning = this.avatarRespawnRemaining > 0;
+    this.avatarRespawnRemaining = Math.max(0, this.avatarRespawnRemaining - delta / 1000);
+    const justReappeared = wasRespawning && this.avatarRespawnRemaining === 0;
     this.avatarHurtRemaining = Math.max(0, this.avatarHurtRemaining - delta / 1000);
     this.avatarCelebrateRemaining = Math.max(0, this.avatarCelebrateRemaining - delta / 1000);
     const skin: MagnetSkin = this.profile.equippedCosmetic === 'electric' || this.profile.equippedCosmetic === 'gold'
       ? this.profile.equippedCosmetic : 'classic';
-    let mood: MagnetMood = 'idle';
+    const health = this.simulation.state.health;
+    let mood: MagnetMood = health <= 1 ? 'serious' : health === 2 ? 'worried' : 'idle';
     if (this.avatarHurtRemaining > 0) mood = 'hurt';
     else if (this.avatarCelebrateRemaining > 0) mood = 'celebrate';
-    else if (this.simulation.state.repulsionActive) mood = 'repel';
-    else if (this.hasNearbyMagneticObject()) mood = 'attract';
+    else if (health >= BALANCE.player.maxHealth && this.simulation.state.repulsionActive) mood = 'repel';
+    else if (health >= BALANCE.player.maxHealth && this.hasNearbyMagneticObject()) mood = 'attract';
     const texture = magnetTextureKey(skin, mood);
     if (texture !== this.currentAvatarTexture) {
       this.currentAvatarTexture = texture;
       this.playerAvatar.setTexture(texture);
     }
-    const bob = speed < 45 ? Math.sin(this.simulation.state.simTime * 4.5) * 2 : 0;
-    this.playerAvatar.setVisible(true).setPosition(player.x, player.y + bob)
-      .setRotation(Phaser.Math.Clamp(speedX * 0.00045 + body.velocity.y * 0.00013, -0.14, 0.14));
     const moving = Phaser.Math.Clamp(speed / BALANCE.player.maxSpeed, 0, 1);
-    this.playerAvatar.setDisplaySize(BALANCE.player.displaySize * (1 + moving * 0.018), BALANCE.player.displaySize * (1 - moving * 0.025));
+    const horizontal = Phaser.Math.Clamp(speedX / BALANCE.player.maxSpeed, -1, 1);
+    const vertical = Phaser.Math.Clamp(body.velocity.y / BALANCE.player.maxSpeed, -1, 1);
+    const targetRotation = Phaser.Math.Clamp(horizontal * 0.19 - vertical * 0.045, -0.21, 0.21);
+    const rotationEase = 1 - Math.exp(-14 * Math.max(0, delta) / 1000);
+    const rotation = Phaser.Math.Linear(this.playerAvatar.rotation, targetRotation, rotationEase);
+    const time = this.simulation.state.simTime;
+    const idleBob = (1 - moving) * Math.sin(time * 4.5) * 2.2;
+    const movementBob = moving * Math.sin(time * 16) * 1.2;
+    this.playerAvatar.setVisible(this.avatarRespawnRemaining === 0).setPosition(player.x, player.y + idleBob + movementBob)
+      .setRotation(rotation);
+    this.playerAvatar.setDisplaySize(
+      BALANCE.player.displaySize * (1 + moving * 0.04),
+      BALANCE.player.displaySize * (1 - moving * 0.05),
+    );
     player.setVisible(false);
     if (this.simulation.state.invulnerabilityRemaining > 0) {
       const flash = Math.sin(this.simulation.state.simTime * 25) > 0 ? 0.38 : 1;
       this.playerAvatar.setAlpha(flash);
     } else this.playerAvatar.setAlpha(1);
-    this.drawMagneticField(player.x, player.y);
+    this.updateShieldAura(time);
+    if (justReappeared) {
+      this.burst(player.x, player.y, 12, '#9af5ff');
+      this.collectionRing(player.x, player.y, 0x83efff);
+    }
+    this.drawBombMotionFeedback();
     if (this.profile.equippedCosmetic === 'trail') {
       this.trailAccumulator += delta / 1000;
       if (this.trailAccumulator >= 0.16 && Math.hypot(speedX, (player.body as Phaser.Physics.Arcade.Body).velocity.y) > 45) {
@@ -426,123 +447,87 @@ export class GameScene extends Phaser.Scene {
     return false;
   }
 
-  private drawMagneticField(x: number, y: number): void {
-    const graphics = this.magneticField;
+  private updateShieldAura(time: number): void {
+    const graphics = this.shieldAura;
     graphics.clear();
-    const repelling = this.simulation.state.repulsionActive;
-    const overdrive = this.simulation.features.overdriveActive;
-    const radius = repelling ? BALANCE.magnet.repulsionRadius : BALANCE.magnet.attractionRadius;
-    const tint = overdrive ? GAME.colors.violet : repelling ? GAME.colors.orange : GAME.colors.cyan;
-    const alpha = overdrive ? 0.6 : repelling ? 0.4 : 0.13;
-    graphics.lineStyle(overdrive ? 3.2 : repelling ? 2.5 : 1.2, tint, alpha).strokeCircle(x, y, repelling ? 38 : 31);
-    graphics.lineStyle(1, tint, repelling ? 0.3 : 0.12);
-    const phase = this.simulation.state.simTime * (repelling ? -0.7 : 0.34);
-    for (let index = 0; index < 6; index += 1) {
-      const start = phase + index * Math.PI / 3;
-      graphics.beginPath();
-      graphics.arc(x, y, radius, start, start + 0.25, false);
-      graphics.strokePath();
+    if (!this.simulation.state.hasShield || !this.playerAvatar.visible) {
+      graphics.setVisible(false);
+      return;
     }
-    // Quiet radial lines make the direction readable even between pickups.
-    for (let index = 0; index < 6; index += 1) {
-      const angle = index * Math.PI / 3 + Math.sin(phase) * 0.08;
-      const inner = radius * 0.54;
-      const outer = radius * 0.88;
-      graphics.lineStyle(1, tint, repelling ? 0.16 : 0.1)
-        .lineBetween(x + Math.cos(angle) * inner, y + Math.sin(angle) * inner,
-          x + Math.cos(angle) * outer, y + Math.sin(angle) * outer);
-      const travel = (this.simulation.state.simTime * 0.85 + index / 6) % 1;
-      const arrowRadius = inner + (repelling ? travel : 1 - travel) * (outer - inner);
-      const direction = repelling ? 1 : -1;
-      const ax = x + Math.cos(angle) * arrowRadius;
-      const ay = y + Math.sin(angle) * arrowRadius;
-      this.drawFieldArrow(ax, ay, Math.cos(angle) * direction, Math.sin(angle) * direction, tint, 0.34, 4);
-    }
-    if (repelling) {
-      const pulse = (this.simulation.state.simTime * 1.35) % 1;
-      const pulseRadius = 32 + pulse * 84;
-      const pulseColor = overdrive ? GAME.colors.violet : GAME.colors.orange;
-      graphics.lineStyle(overdrive ? 4 : 3, pulseColor, (1 - pulse) * (overdrive ? 0.72 : 0.5)).strokeCircle(x, y, pulseRadius);
-      graphics.lineStyle(1, overdrive ? 0xf2ddff : 0xffe1bc, (1 - pulse) * 0.34).strokeCircle(x, y, pulseRadius + 5);
-    } else if (overdrive) {
-      const pulse = (this.simulation.state.simTime * 1.8) % 1;
-      graphics.lineStyle(2.4, GAME.colors.violet, (1 - pulse) * 0.48).strokeCircle(x, y, 40 + pulse * 40);
-    }
+    graphics.setVisible(true);
 
-    this.magneticDrawnEntityIds.length = 0;
-    const selectedLimit = BALANCE.magnet.maximumVisibleLinks;
-    for (let selected = 0; selected < selectedLimit; selected += 1) {
-      let closest: (typeof this.simulation.entities)[number] | undefined;
-      let closestDistance = radius * radius;
-      for (const entity of this.simulation.entities) {
-        if (!entity.active || entity.warningRemaining > 0 || this.magneticDrawnEntityIds.includes(entity.id)) continue;
-        if (entity.kind === 'training' && !repelling) continue;
-        const dx = entity.sprite.x - x;
-        const dy = entity.sprite.y - y;
-        const distanceSquared = dx * dx + dy * dy;
-        if (distanceSquared <= 1e-8) continue;
-        if (distanceSquared < closestDistance) { closest = entity; closestDistance = distanceSquared; }
-      }
-      if (!closest) break;
-      this.magneticDrawnEntityIds.push(closest.id);
-      const ex = closest.sprite.x;
-      const ey = closest.sprite.y;
-      const distance = Math.sqrt(closestDistance);
-      const bend = Math.sin(this.simulation.state.simTime * 1.8 + closest.id) * Math.min(18, distance * 0.07);
-      const cx = (x + ex) * 0.5 - ((ey - y) / distance) * bend;
-      const cy = (y + ey) * 0.5 + ((ex - x) / distance) * bend;
-      const color = repelling ? GAME.colors.orange
-        : closest.kind === 'bomb' || closest.kind === 'training' ? GAME.colors.red : GAME.colors.cyan;
-      const strength = 0.38 + (1 - distance / radius) * 0.5;
-      graphics.lineStyle(repelling ? 2.5 : 1.8, color, strength).beginPath().moveTo(x, y);
-      const segmentCount = 7;
-      let previousX = x;
-      let previousY = y;
-      for (let segment = 1; segment <= segmentCount; segment += 1) {
-        const t = segment / segmentCount;
-        const inverse = 1 - t;
-        const nextX = inverse * inverse * x + 2 * inverse * t * cx + t * t * ex;
-        const nextY = inverse * inverse * y + 2 * inverse * t * cy + t * t * ey;
-        graphics.lineBetween(previousX, previousY, nextX, nextY);
-        previousX = nextX;
-        previousY = nextY;
-      }
-      const beadPhase = (this.simulation.state.simTime * 0.72 + closest.id * 0.19) % 1;
-      const beadT = repelling ? 0.15 + beadPhase * 0.72 : 0.87 - beadPhase * 0.72;
-      const inverse = 1 - beadT;
-      const beadX = inverse * inverse * x + 2 * inverse * beadT * cx + beadT * beadT * ex;
-      const beadY = inverse * inverse * y + 2 * inverse * beadT * cy + beadT * beadT * ey;
-      graphics.fillStyle(color, 0.26).fillCircle(beadX, beadY, 7);
-      const tangentX = 2 * inverse * (cx - x) + 2 * beadT * (ex - cx);
-      const tangentY = 2 * inverse * (cy - y) + 2 * beadT * (ey - cy);
-      const tangentLength = Math.max(1, Math.hypot(tangentX, tangentY));
-      const direction = repelling ? 1 : -1;
-      this.drawFieldArrow(beadX, beadY, tangentX / tangentLength * direction, tangentY / tangentLength * direction, 0xeaffff, 0.96, 6);
+    const pulse = 0.5 + Math.sin(time * 5.6) * 0.5;
+    const radius = this.playerAvatar.displayWidth * 0.62;
+    const centerX = this.playerAvatar.x;
+    const centerY = this.playerAvatar.y;
+    const corners = Array.from({ length: 6 }, (_, index) => {
+      const angle = -Math.PI / 2 + (index * Math.PI) / 3;
+      return { x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius };
+    });
+
+    graphics.fillStyle(0x62f2d1, 0.035 + pulse * 0.025).fillPoints(corners, true);
+    graphics.lineStyle(1.5, 0x7fffe0, 0.24 + pulse * 0.24).strokePoints(corners, true);
+
+    const orbit = time * 1.1;
+    for (let index = 0; index < 3; index += 1) {
+      const angle = orbit - Math.PI / 2 + (index * Math.PI * 2) / 3;
+      const plateX = centerX + Math.cos(angle) * (radius + 1.5);
+      const plateY = centerY + Math.sin(angle) * (radius + 1.5);
+      const plate = Array.from({ length: 6 }, (_, vertex) => {
+        const vertexAngle = angle + (vertex * Math.PI) / 3;
+        const plateRadius = vertex % 2 === 0 ? 6.2 : 4.8;
+        return { x: plateX + Math.cos(vertexAngle) * plateRadius, y: plateY + Math.sin(vertexAngle) * plateRadius };
+      });
+      graphics.fillStyle(0x58eecb, 0.68 + pulse * 0.24).fillPoints(plate, true);
+      graphics.lineStyle(1.1, 0xe0fff5, 0.72 + pulse * 0.24).strokePoints(plate, true);
     }
-    // A short tracer distinguishes a valid bomb shot from an idle hazard.
+  }
+
+  private shieldShatter(x: number, y: number): void {
+    const shards = this.add.graphics().setPosition(x, y).setDepth(26);
+    const radius = this.playerAvatar.displayWidth * 0.62;
+    const corners = Array.from({ length: 6 }, (_, index) => {
+      const angle = -Math.PI / 2 + (index * Math.PI) / 3;
+      return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+    });
+    shards.lineStyle(2.4, 0x9bffe7, 0.96);
+    for (let index = 0; index < corners.length; index += 1) {
+      const start = corners[index]!;
+      const end = corners[(index + 1) % corners.length]!;
+      shards.lineBetween(start.x, start.y, end.x, end.y);
+    }
+    shards.lineStyle(1.2, 0xf0fffb, 0.92);
+    for (let index = 0; index < corners.length; index += 2) {
+      const corner = corners[index]!;
+      const angle = Math.atan2(corner.y, corner.x);
+      shards.lineBetween(Math.cos(angle) * 10, Math.sin(angle) * 10, corner.x * 0.72, corner.y * 0.72);
+    }
+    const tween = this.tweens.add({
+      targets: shards, scale: 1.18, alpha: 0, duration: 260, ease: 'Cubic.Out', onComplete: () => shards.destroy(),
+    });
+    this.trackTransient(shards, tween);
+  }
+
+  private drawBombMotionFeedback(): void {
+    const graphics = this.motionFeedback;
+    graphics.clear();
+    // This short, straight tracer follows a bomb's real velocity; it is not an aim guide.
     for (const entity of this.simulation.entities) {
       if (!entity.active || entity.kind !== 'bomb' || entity.repelledUntil <= this.simulation.state.simTime) continue;
       const speed = Math.hypot(entity.body.velocity.x, entity.body.velocity.y);
       if (speed < 80) continue;
-      const length = Math.min(50, speed * 0.16);
-      graphics.lineStyle(2, GAME.colors.orange, 0.58).lineBetween(
-        entity.sprite.x - entity.body.velocity.x / speed * length,
-        entity.sprite.y - entity.body.velocity.y / speed * length, entity.sprite.x, entity.sprite.y,
-      );
-      graphics.lineStyle(1.5, GAME.colors.orange, 0.68).strokeCircle(entity.sprite.x, entity.sprite.y, BALANCE.objects.bomb.radius + 4);
+      const length = Phaser.Math.Clamp(speed * 0.11, 12, 34);
+      const tailX = entity.sprite.x - entity.body.velocity.x / speed * length;
+      const tailY = entity.sprite.y - entity.body.velocity.y / speed * length;
+      graphics.lineStyle(5, GAME.colors.orange, 0.16).lineBetween(tailX, tailY, entity.sprite.x, entity.sprite.y);
+      graphics.lineStyle(2, 0xffd1a9, 0.68).lineBetween(tailX, tailY, entity.sprite.x, entity.sprite.y);
     }
-  }
-
-  private drawFieldArrow(x: number, y: number, dx: number, dy: number, color: number, alpha: number, size: number): void {
-    this.magneticField.lineStyle(1.7, color, alpha)
-      .lineBetween(x, y, x - dx * size - dy * size * 0.55, y - dy * size + dx * size * 0.55)
-      .lineBetween(x, y, x - dx * size + dy * size * 0.55, y - dy * size - dx * size * 0.55);
   }
 
   private showMenu(): void {
     this.setMode('menu');
-    this.magneticField?.clear();
     this.playerAvatar?.setVisible(false);
+    this.shieldAura?.setVisible(false).clear();
     for (const target of this.simulation?.targets ?? []) target.sprite.setVisible(false);
     for (const entity of this.simulation?.entities ?? []) entity.sprite.setVisible(false);
     this.clearOverlay();
@@ -556,27 +541,135 @@ export class GameScene extends Phaser.Scene {
     this.overlay.add(hero);
     const heroTween = this.tweens.add({ targets: hero, y: 211, angle: 2, duration: 1250, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
     this.overlayTweens.push(heroTween);
-    const orbit = this.add.graphics();
-    orbit.lineStyle(1, 0x6aeafa, 0.18).strokeCircle(480, 205, 97);
-    orbit.lineStyle(1, 0xffa460, 0.13).strokeCircle(480, 205, 112);
-    orbit.fillStyle(0x72efff, 0.62).fillCircle(393, 158, 2.5);
-    orbit.fillStyle(0xffc26f, 0.75).fillCircle(559, 260, 3);
-    this.overlay.add(orbit);
     this.addOverlayText(480, 72, 'MAGNET', 52, '#f4f7ff', true, 3);
     this.addOverlayText(480, 119, 'MADNESS', 21, '#75eaf6', true, 4);
     this.addOverlayText(480, 286, 'A LITTLE MAGNET. A VERY BIG MESS.', 13, '#c2cde5', true, 2);
-    this.addOverlayText(480, 313, 'ATTRACT TREASURE  /  AIM BOMBS AT TARGETS  /  SURVIVE', 11, '#889bbd', false, 2);
-    this.addButton(this.overlay, 480, 374, 260, 58, 'START RUN', () => this.beginRun(), { primary: true });
+    this.addOverlayText(480, 313, 'PULL IN TREASURE  /  PUSH BOMBS INTO TARGETS  /  SURVIVE', 11, '#889bbd', false, 2);
+    this.addOverlayText(480, 333, 'GIFTS: +1-2 HEARTS  /  SHIELD BLOCKS A BOMB  /  OVERDRIVE BOOSTS SCORE + MAGNET', 9, '#91a2c3', false, 1);
+    this.addButton(this.overlay, 480, 384, 260, 58, 'START RUN', () => this.beginRun(), { primary: true });
     this.addButton(this.overlay, 480, 447, 200, 42, 'MAGNET LAB', () => this.showCosmetics('menu'), { small: true });
     this.addOverlayText(480, 489, `BEST SCORE  ${profile.highScore.toLocaleString()}     ·     ${profile.coins} COINS`, 11, '#95a6c8', true, 1);
-    this.addMuteButton(this.layout.portrait ? 480 + this.layout.width / 2 - 80 : 914, 31);
-    this.addOverlayText(480, 518, this.controls.isTouchDevice ? 'LEFT JOYSTICK  ·  HOLD ORANGE PULSE TO REPEL' : 'WASD / ARROWS  MOVE     SPACE  REPEL     ESC  PAUSE', 10, '#657694', false, 1);
+    const storageUnavailable = !this.profile.storageIsAvailable;
+    if (storageUnavailable) {
+      this.storageWarningShown = true;
+      this.addStorageWarning(504);
+    }
+    this.addMenuTopButtons();
+    this.addOverlayText(480, storageUnavailable ? 528 : 518, this.controls.isTouchDevice ? 'LEFT JOYSTICK  ·  HOLD ORANGE PULSE TO REPEL' : 'WASD / ARROWS  MOVE     SPACE  REPEL     ESC  PAUSE', storageUnavailable ? 9 : 10, '#657694', false, 1);
     this.enterOverlay();
     if (this.runCounter > 0) {
       this.audio.setInterrupted(false);
       void this.audio.unlock();
       this.audio.playMusic();
     }
+  }
+
+  private showInstructions(): void {
+    if (this.mode !== 'menu' && this.mode !== 'instructions') return;
+    this.setMode('instructions');
+    this.clearOverlay();
+    this.addScrim(0.82);
+
+    const panelWidth = Math.min(680, this.layout.width - 24);
+    const panelHeight = this.layout.portrait ? 532 : 448;
+    this.addPanel(480, 270, panelWidth, panelHeight);
+    this.addOverlayText(480, this.layout.portrait ? 35 : 81, 'HOW TO PLAY', 25, '#f4f7ff', true, 2);
+    this.addOverlayText(480, this.layout.portrait ? 64 : 108, 'CONTROL YOUR MAGNET. TURN BOMBS INTO POINTS.', 12, '#75eaf6', true, 1);
+
+    const controls = this.controls.isTouchDevice
+      ? 'LEFT JOYSTICK / MOVE\nHOLD ORANGE PULSE / REPEL\nTwo thumbs work at once.'
+      : 'W / ↑ = UP; A / ← = LEFT\nS / ↓ = DOWN; D / → = RIGHT\nHOLD SPACE = PUSH; RELEASE = PULL\nP OR ESC = PAUSE';
+    const cards = [
+      { title: 'CONTROLS', detail: controls, color: 0x68e7f5 },
+      { title: 'YOUR MISSION', detail: 'Your magnet pulls in nearby pickups.\nPush bombs into corner targets for score.\nAvoid blasts; you start with 3 hearts.', color: 0xff8b62 },
+      { title: 'PICKUPS', detail: 'CRYSTAL / +10 energy   BATTERY / +25\nSHIELD blocks the next bomb.\nGIFT gives 1-2 hearts, a shield, or Overdrive.', color: 0xffd36b },
+      { title: 'COMBOS & OVERDRIVE', detail: 'Collect 5 coins/crystals to raise your combo.\nFill the meter for Overdrive: double score,\nstronger magnet, and half repel energy cost.', color: 0xa98bff },
+    ] as const;
+
+    if (this.layout.portrait) {
+      const cardWidth = panelWidth - 32;
+      const cardHeight = 80;
+      const centers = [128, 213, 298, 383];
+      cards.forEach((card, index) => this.addInstructionCard(480, centers[index]!, cardWidth, cardHeight, card.title, card.detail, card.color));
+      this.addOverlayText(480, 440, 'FIELD TIP / BOMBS GROW; YOUR MAGNET PULL GETS STRONGER EVERY 2,500 POINTS.', 11, '#c4d0e6', true, 0);
+      if (!this.profile.storageIsAvailable) this.addStorageWarning(456);
+      this.addButton(this.overlay, 480, this.profile.storageIsAvailable ? 480 : 493, 170, 38, 'BACK TO MENU', () => this.showMenu(), { small: true, labelSize: 11 });
+    } else {
+      const cardWidth = (panelWidth - 42) / 2;
+      const cardHeight = 124;
+      const centerOffset = cardWidth / 2 + 8;
+      const positions = [
+        [480 - centerOffset, 183], [480 + centerOffset, 183],
+        [480 - centerOffset, 317], [480 + centerOffset, 317],
+      ] as const;
+      cards.forEach((card, index) => {
+        const [x, y] = positions[index]!;
+        this.addInstructionCard(x, y, cardWidth, cardHeight, card.title, card.detail, card.color);
+      });
+      this.addOverlayText(480, 407, 'FIELD TIP / BOMBS GROW; YOUR MAGNET PULL GETS STRONGER EVERY 2,500 POINTS.', 11, '#c4d0e6', true, 0);
+      if (!this.profile.storageIsAvailable) this.addStorageWarning(429);
+      this.addButton(this.overlay, 480, 461, 170, 38, 'BACK TO MENU', () => this.showMenu(), { small: true, labelSize: 11 });
+    }
+
+    this.addMenuMuteButton();
+    this.enterOverlay();
+  }
+
+  private addInstructionCard(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    title: string,
+    detail: string,
+    accent: number,
+  ): void {
+    const card = this.add.graphics();
+    card.fillStyle(0x0d1930, 0.82).fillRoundedRect(x - width / 2, y - height / 2, width, height, 13);
+    card.lineStyle(1, accent, 0.34).strokeRoundedRect(x - width / 2, y - height / 2, width, height, 13);
+    card.fillStyle(accent, 0.88).fillRoundedRect(x - width / 2 + 11, y - height / 2 + 13, 3, height - 26, 2);
+    this.overlay.add(card);
+
+    this.addOverlayText(x - width / 2 + 22, y - height / 2 + 22, title, 12, '#f3f7ff', true, 0, 'left');
+    const copy = this.add.text(x - width / 2 + 22, y - height / 2 + 38, detail, {
+      fontFamily: 'Arial, sans-serif', fontSize: '12px',
+      color: '#d0dcef', lineSpacing: 1, wordWrap: { width: width - 42 },
+      resolution: this.uiTextResolution(),
+    }).setOrigin(0, 0);
+    this.overlay.add(copy);
+  }
+
+  private addMenuTopButtons(): void {
+    const scale = this.layout.portrait ? 1.5 : 1;
+    const soundX = this.layout.width - 80;
+    const sound = this.menuOverlayPoint(soundX, 31);
+    this.addMuteButton(sound.x, sound.y);
+
+    const instructionsWidth = 118;
+    const instructionsX = soundX - (96 / 2 + instructionsWidth / 2 + 8) * scale;
+    const instructions = this.menuOverlayPoint(instructionsX, 31);
+    this.addButton(this.overlay, instructions.x, instructions.y, instructionsWidth, 34, 'INSTRUCTIONS', () => this.showInstructions(), { small: true, labelSize: 9 });
+  }
+
+  private addMenuMuteButton(): void {
+    const point = this.menuOverlayPoint(this.layout.width - 80, 31);
+    this.addMuteButton(point.x, point.y);
+  }
+
+  private addStorageWarning(y: number): void {
+    this.addOverlayText(480, y, 'PROGRESS WILL NOT BE SAVED IN THIS BROWSER', 10, '#ffb982', true, 1);
+  }
+
+  private syncStorageWarning(): void {
+    if (this.profile.storageIsAvailable || this.storageWarningShown) return;
+    this.storageWarningShown = true;
+    if (this.mode === 'playing') {
+      this.floatingText(this.layout.width / 2, this.layout.height / 2 + 90, 'PROGRESS WILL NOT BE SAVED', '#ffb982', 13);
+    }
+  }
+
+  private menuOverlayPoint(screenX: number, screenY: number): { x: number; y: number } {
+    return { x: screenX - this.overlay.x, y: screenY - this.overlay.y };
   }
 
   private pauseGame(): void {
@@ -602,7 +695,8 @@ export class GameScene extends Phaser.Scene {
     this.addButton(this.overlay, 480, 254, 230, 52, 'CONTINUE', () => { void this.returnThroughBreak('resume'); }, { primary: true });
     this.addButton(this.overlay, 480, 322, 230, 46, 'RESTART RUN', () => { void this.returnThroughBreak('restart'); }, { small: true });
     this.addButton(this.overlay, 480, 382, 230, 42, 'BACK TO MENU', () => this.abandonToMenu(), { small: true, muted: true });
-    this.addMuteButton(650, 411);
+    if (!this.profile.storageIsAvailable) this.addStorageWarning(422);
+    this.addMuteButton(620, 130);
     this.enterOverlay();
   }
 
@@ -670,10 +764,12 @@ export class GameScene extends Phaser.Scene {
 
   private beginRun(seed?: number): void {
     this.clearTransientEffects();
+    this.shieldAura.setVisible(false).clear();
     this.clearOverlay();
     this.physics.world.resume();
     this.tweens.resumeAll();
     this.hud.setVisible(true);
+    this.controls.refreshDeviceDetection();
     this.controls.setActive(true);
     this.recordAtRunStart = this.profile.highScore;
     this.currentRunNewRecord = false;
@@ -684,6 +780,7 @@ export class GameScene extends Phaser.Scene {
     this.trailAccumulator = 0;
     this.avatarHurtRemaining = 0;
     this.avatarCelebrateRemaining = 0;
+    this.avatarRespawnRemaining = 0;
     this.playerAvatar.setVisible(true).setAlpha(1).setDisplaySize(BALANCE.player.displaySize, BALANCE.player.displaySize).setRotation(0);
     this.lastHudState = '';
     this.runCounter += 1;
@@ -707,6 +804,7 @@ export class GameScene extends Phaser.Scene {
   private completeRun(event: Extract<SimEvent, { type: 'game-over' }>): void {
     this.clearTransientEffects();
     this.playerAvatar.setVisible(false);
+    this.shieldAura.setVisible(false).clear();
     this.physics.world.pause();
     this.controls.setActive(false);
     this.bridge.stopGameplay();
@@ -726,22 +824,23 @@ export class GameScene extends Phaser.Scene {
     this.lastRunResult = event;
     this.previousHighScore = oldHighScore;
     this.clearOverlay();
-    this.addScrim(0.84);
+    this.addScrim(0.76);
     this.addPanel(480, 270, 500, 410);
     this.addOverlayText(480, 112, this.currentRunNewRecord ? 'NEW PERSONAL BEST!' : 'RUN COMPLETE', this.currentRunNewRecord ? 26 : 24, this.currentRunNewRecord ? '#ffd576' : '#f3f6ff', true, 2);
     this.addOverlayText(480, 174, event.score.toLocaleString(), 52, '#ffffff', true, 3);
-    this.addOverlayText(480, 214, 'POINTS', 10, '#8ea1c5', true, 1);
+    this.addOverlayText(480, 214, 'POINTS', 11, '#a9bad8', true, 1);
     const minutes = Math.floor(event.survivalSeconds / 60);
     const seconds = Math.floor(event.survivalSeconds % 60);
-    this.addOverlayText(480, 258, `SURVIVED  ${minutes}:${String(seconds).padStart(2, '0')}     ·     BEST  ${Math.max(oldHighScore, event.score).toLocaleString()}`, 12, '#bac8e1', true, 1);
-    this.addOverlayText(480, 288, `${event.coinsCollected} PROGRESS COINS     ·     PEAK COMBO  x${event.peakMultiplier}`, 11, '#c4d1e8', true, 1);
+    this.addOverlayText(480, 258, `SURVIVED  ${minutes}:${String(seconds).padStart(2, '0')}     ·     BEST  ${Math.max(oldHighScore, event.score).toLocaleString()}`, 13, '#d0dcf2', true, 1);
+    this.addOverlayText(480, 288, `${event.coinsCollected} PROGRESS COINS     ·     PEAK COMBO  x${event.peakMultiplier}`, 12, '#d2def2', true, 1);
     if (this.newlyUnlocked.length > 0) {
-      this.addOverlayText(480, 319, `UNLOCKED  ${this.newlyUnlocked.map((id) => COSMETIC_INFO[id].name).join('  ·  ')}`, 11, '#86f2db', true, 1);
+      this.addOverlayText(480, 319, `UNLOCKED  ${this.newlyUnlocked.map((id) => COSMETIC_INFO[id].name).join('  ·  ')}`, 12, '#86f2db', true, 1);
     }
-    this.addOverlayText(480, 302, `GOALS ${event.goalsCompleted}/3    ·    OVERDRIVE ${event.overdriveActivations}    ·    DEFLECT ${event.deflections}`, 10, '#c4b6ea', true, 1);
+    this.addOverlayText(480, 302, `GOALS ${event.goalsCompleted}/3    ·    OVERDRIVE ${event.overdriveActivations}    ·    DEFLECT ${event.deflections}`, 11, '#d0c6f2', true, 1);
     this.addButton(this.overlay, 480, 369, 250, 52, 'TRY AGAIN', () => { void this.returnThroughBreak('restart'); }, { primary: true });
-    this.addButton(this.overlay, 480, 429, 185, 38, 'MAIN MENU', () => this.showMenu(), { small: true, muted: true });
-    this.addMuteButton(700, 451);
+    this.addButton(this.overlay, 480, 429, 185, 38, 'MAIN MENU', () => this.showMenu(), { small: true, muted: true, labelSize: 12 });
+    if (!this.profile.storageIsAvailable) this.addStorageWarning(467);
+    this.addMuteButton(662, 443);
     this.enterOverlay();
     if (this.currentRunNewRecord && celebrate) this.audio.play('record');
   }
@@ -756,32 +855,84 @@ export class GameScene extends Phaser.Scene {
     this.clearOverlay();
     this.addScrim(0.87);
     this.addPanel(480, 270, 590, 460);
-    this.addOverlayText(480, 74, 'MAGNET LAB', 29, '#f3f7ff', true, 2);
     const profile = this.profile.get();
-    this.addOverlayText(480, 107, `PROGRESS  ${profile.coins} COINS`, 11, '#9aaccd', true, 1);
+    this.addOverlayText(480, 71, 'MAGNET LAB', 28, '#f3f7ff', true, 1);
+    this.addOverlayText(480, 102, `COSMETIC COLLECTION  ·  ${profile.coins} PROGRESS COINS`, 11, '#a9bad3', true, 0);
     const cosmetics: CosmeticId[] = ['classic', 'electric', 'gold', 'trail', 'pulse'];
     cosmetics.forEach((id, index) => {
-      const y = 154 + index * 62;
+      const y = 151 + index * 64;
       const unlocked = this.profile.isUnlocked(id);
       const equipped = profile.equipped === id;
-      this.overlay.add(this.add.image(286, y, `magnet-${id === 'electric' || id === 'gold' ? id : 'classic'}`).setDisplaySize(39, 39));
-      this.addOverlayText(327, y - 9, COSMETIC_INFO[id].name, 12, unlocked ? '#f1f5ff' : '#9ba9c2', true, 2);
-      const progress = id === 'electric' ? `${profile.coins}/100 COINS`
-        : id === 'gold' ? `${Math.floor(profile.stats.longestRunSeconds)}/180 SEC`
-          : id === 'trail' ? `BEST COMBO  x${profile.stats.bestMultiplier}`
-            : id === 'pulse' ? `${profile.stats.targetHits}/20 TARGETS` : 'AVAILABLE';
-      this.addOverlayText(327, y + 11, unlocked ? COSMETIC_INFO[id].detail : progress, 10, '#91a1bf', false, 2);
-      this.addButton(this.overlay, 646, y, 102, 34, equipped ? 'EQUIPPED' : unlocked ? 'EQUIP' : 'LOCKED', () => {
+      const row = this.add.graphics();
+      row.fillStyle(equipped ? 0x17394a : 0x1a2a48, equipped ? 0.94 : 0.78)
+        .fillRoundedRect(228, y - 29, 504, 58, 14);
+      row.lineStyle(1, equipped ? 0x66e7db : unlocked ? 0x7892c0 : 0x596b8d, equipped ? 0.7 : 0.34)
+        .strokeRoundedRect(228, y - 29, 504, 58, 14);
+      row.fillStyle(0x09152a, 0.88).fillRoundedRect(236, y - 22, 48, 44, 12);
+      row.lineStyle(1, 0x9db8e4, 0.22).strokeRoundedRect(236, y - 22, 48, 44, 12);
+      this.overlay.add(row);
+      this.addCosmeticPreview(id, 260, y);
+
+      const progress = this.cosmeticUnlockProgress(id, profile, unlocked);
+      this.addOverlayText(296, y - 14, COSMETIC_INFO[id].name, 13, unlocked ? '#f4f7ff' : '#c0cbe0', true, 0, 'left');
+      this.addOverlayText(296, y + 2, COSMETIC_INFO[id].detail, 10, '#c0cde4', false, 0, 'left');
+      this.addOverlayText(296, y + 18, progress, 9, unlocked ? '#75e7d8' : '#9aaccb', true, 0, 'left');
+      this.addButton(this.overlay, 664, y, 130, 36, equipped ? 'EQUIPPED' : unlocked ? 'EQUIP' : 'LOCKED', () => {
         if (!unlocked || !this.profile.equip(id)) return;
         this.simulation.setCosmetic(id);
         this.audio.play('click');
         this.showCosmetics(from);
       }, { small: true, muted: !unlocked, labelSize: 10 });
     });
-    this.addButton(this.overlay, 480, 482, 180, 40, from === 'paused' ? 'BACK TO PAUSE' : 'BACK', () => {
+    if (!this.profile.storageIsAvailable) this.addStorageWarning(443);
+    this.addButton(this.overlay, 480, 472, 180, 38, from === 'paused' ? 'BACK TO PAUSE' : 'BACK', () => {
       if (from === 'paused') { this.setMode('paused'); this.showPause(); } else this.showMenu();
     }, { small: true });
     this.enterOverlay();
+  }
+
+  private cosmeticUnlockProgress(id: CosmeticId, profile: ReturnType<ProfileStore['get']>, unlocked: boolean): string {
+    if (id === 'classic') return 'AVAILABLE FROM START';
+    const value = id === 'electric' ? profile.coins
+      : id === 'gold' ? Math.floor(profile.stats.longestRunSeconds)
+        : id === 'trail' ? profile.stats.bestMultiplier
+          : profile.stats.targetHits;
+    const goal = id === 'electric' ? BALANCE.cosmetics.electricCoins
+      : id === 'gold' ? BALANCE.cosmetics.goldSurvivalSeconds
+        : id === 'trail' ? 5
+          : BALANCE.cosmetics.targetHits;
+    const current = Math.min(value, goal);
+    const progress = id === 'trail' ? `x${current}/x${goal} BEST COMBO`
+      : id === 'gold' ? `${current}/${goal} SEC IN ONE RUN`
+        : id === 'pulse' ? `${current}/${goal} TARGETS HIT`
+          : `${current}/${goal} COINS`;
+    return unlocked ? `UNLOCKED  ·  ${progress}` : `UNLOCK AT  ·  ${progress}`;
+  }
+
+  private addCosmeticPreview(id: CosmeticId, x: number, y: number): void {
+    if (id === 'classic' || id === 'electric' || id === 'gold') {
+      this.overlay.add(this.add.image(x, y, magnetTextureKey(id)).setDisplaySize(50, 50));
+      return;
+    }
+
+    const effect = this.add.graphics();
+    if (id === 'trail') {
+      effect.lineStyle(2.5, 0x66eaff, 0.3).lineBetween(x - 17, y - 5, x - 3, y - 5);
+      effect.lineStyle(2, 0x80f5ff, 0.52).lineBetween(x - 14, y + 4, x + 1, y + 4);
+      effect.lineStyle(1.5, 0xb5fbff, 0.78).lineBetween(x - 10, y + 12, x + 3, y + 12);
+      effect.fillStyle(0x8ff5ff, 0.82).fillCircle(x - 13, y - 12, 2);
+      effect.fillStyle(0xd9ffff, 0.9).fillCircle(x - 7, y + 13, 1.6);
+      this.overlay.add(effect);
+      this.overlay.add(this.add.image(x + 8, y, 'item-crystal').setDisplaySize(27, 27));
+      this.overlay.add(this.add.image(x - 12, y - 14, 'spark').setDisplaySize(10, 10));
+      return;
+    }
+
+    effect.lineStyle(2, 0x79edff, 0.24).strokeCircle(x, y, 20);
+    effect.lineStyle(2, 0x91f3ff, 0.48).strokeCircle(x, y, 14);
+    effect.lineStyle(1.5, 0xd5ffff, 0.76).strokeCircle(x, y, 8);
+    this.overlay.add(effect);
+    this.overlay.add(this.add.image(x, y, 'spark').setDisplaySize(18, 18));
   }
 
   private addMuteButton(x: number, y: number): void {
@@ -792,9 +943,10 @@ export class GameScene extends Phaser.Scene {
       this.audio.setMuted(muted);
       this.audio.play('click');
       if (this.mode === 'menu') this.showMenu();
+      else if (this.mode === 'instructions') this.showInstructions();
       else if (this.mode === 'paused') this.showPause();
       else if (this.mode === 'results') this.showResultsFromProfile();
-    }, { small: true, muted: true, labelSize: 9 });
+    }, { small: true, labelSize: 10 });
   }
 
   private showResultsFromProfile(): void {
@@ -819,17 +971,26 @@ export class GameScene extends Phaser.Scene {
     const panel = this.add.graphics();
     width = Math.min(width, this.layout.width - 24);
     height = Math.min(height, this.layout.height - 24);
-    panel.fillStyle(0x101b35, 0.96).fillRoundedRect(x - width / 2, y - height / 2, width, height, 24);
-    panel.lineStyle(1.5, 0x7c9dd4, 0.48).strokeRoundedRect(x - width / 2, y - height / 2, width, height, 24);
-    panel.lineStyle(1, 0x74e7f3, 0.16).strokeRoundedRect(x - width / 2 + 5, y - height / 2 + 5, width - 10, height - 10, 20);
+    panel.fillStyle(0x142342, 0.985).fillRoundedRect(x - width / 2, y - height / 2, width, height, 24);
+    panel.lineStyle(2, 0x9bbaff, 0.72).strokeRoundedRect(x - width / 2, y - height / 2, width, height, 24);
+    panel.lineStyle(1, 0x74e7f3, 0.3).strokeRoundedRect(x - width / 2 + 5, y - height / 2 + 5, width - 10, height - 10, 20);
     this.overlay.add(panel);
   }
 
-  private addOverlayText(x: number, y: number, value: string, size: number, color: string, bold: boolean, stroke = 0): Phaser.GameObjects.Text {
+  private addOverlayText(
+    x: number,
+    y: number,
+    value: string,
+    size: number,
+    color: string,
+    bold: boolean,
+    stroke = 0,
+    align: 'left' | 'center' = 'center',
+  ): Phaser.GameObjects.Text {
     const text = this.add.text(x, y, value, {
       fontFamily: 'Arial, sans-serif', fontSize: `${size}px`, fontStyle: bold ? 'bold' : 'normal',
-      color, align: 'center', stroke: '#071021', strokeThickness: stroke,
-    }).setOrigin(0.5);
+      color, align, stroke: '#071021', strokeThickness: stroke, resolution: this.uiTextResolution(),
+    }).setOrigin(align === 'left' ? 0 : 0.5, 0.5);
     this.overlay.add(text);
     return text;
   }
@@ -862,6 +1023,7 @@ export class GameScene extends Phaser.Scene {
     const text = this.add.text(0, 0, label, {
       fontFamily: 'Arial, sans-serif', fontSize: `${options.labelSize ?? (options.small ? 11 : 16)}px`, fontStyle: 'bold',
       color: options.primary ? '#061c2c' : options.muted ? '#aab8d0' : '#eaf2ff', align: 'center', letterSpacing: options.primary ? 1.3 : 0.4,
+      resolution: this.uiTextResolution(),
     }).setOrigin(0.5);
     button.add([background, text]);
     button.setInteractive({ useHandCursor: true });
@@ -880,6 +1042,12 @@ export class GameScene extends Phaser.Scene {
     return button;
   }
 
+  private uiTextResolution(): number {
+    const canvas = this.game.canvas;
+    const displayScale = Math.max(canvas.clientWidth / this.layout.width, canvas.clientHeight / this.layout.height, 1);
+    return Phaser.Math.Clamp(displayScale * (window.devicePixelRatio || 1), 1, 3);
+  }
+
   private enterOverlay(): void {
     this.overlay.setAlpha(0);
     const tween = this.tweens.add({ targets: this.overlay, alpha: 1, duration: 190, ease: 'Sine.Out' });
@@ -895,29 +1063,51 @@ export class GameScene extends Phaser.Scene {
 
   private setMode(mode: ScreenMode): void {
     this.mode = mode;
+    if (mode !== 'playing') this.motionFeedback?.clear();
     this.game.registry.set('magnet-mode', mode);
   }
 
   private onSimulationEvent(event: SimEvent): void {
     switch (event.type) {
       case 'collect': {
-        const cue: SoundCue = event.kind;
-        this.audio.play(cue, event.multiplier);
+        if (event.kind !== 'gift') this.audio.play(event.kind, event.multiplier);
         const comboMilestone = event.streak > 0 && event.streak % BALANCE.scoring.objectsPerMultiplier === 0;
         if (comboMilestone) {
           this.audio.play('combo');
           this.avatarCelebrateRemaining = 0.46;
           this.popText(this.comboLabel);
         }
-        const color = event.kind === 'coin' ? '#ffdc82' : event.kind === 'crystal' ? '#8beeff' : event.kind === 'battery' ? '#91ffd3' : '#9bffe4';
-        this.burst(event.x, event.y, event.kind === 'coin' ? 7 : 10, color);
-        this.collectionRing(event.x, event.y, event.kind === 'coin' ? 0xffd36b : event.kind === 'crystal' ? 0x6feeff : 0x85ffd0);
+        const color = event.kind === 'coin' ? '#ffdc82'
+          : event.kind === 'crystal' ? '#8beeff'
+            : event.kind === 'battery' ? '#91ffd3'
+              : event.kind === 'gift' ? '#ffe49b' : '#9bffe4';
+        const burstCount = event.kind === 'coin' ? 12 : event.kind === 'crystal' ? 16 : event.kind === 'gift' ? 14 : 10;
+        const ringColor = event.kind === 'coin' ? 0xffd36b : event.kind === 'crystal' ? 0x6feeff : event.kind === 'gift' ? 0xffd879 : 0x85ffd0;
+        this.burst(event.x, event.y, burstCount, color);
+        this.collectionRing(event.x, event.y, ringColor);
         if (event.points > 0) this.popText(this.scoreLabel);
         if (event.points > 0) this.floatingText(event.x, event.y - 12, `+${event.points}${event.multiplier > 1 ? `  x${event.multiplier}` : ''}`, color);
         if (comboMilestone) this.floatingText(event.x, event.y - 35, `x${event.multiplier} COMBO!`, '#ffe08d');
         if (event.kind === 'coin') this.profile.addCoin();
         if (event.kind === 'crystal') this.profile.addCrystal();
         this.profile.recordAchievements(this.simulation.state.simTime, event.multiplier);
+        break;
+      }
+      case 'gift-reward': {
+        this.audio.play('gift');
+        this.avatarCelebrateRemaining = 0.82;
+        const rewardTitle = event.reward === 'hearts'
+          ? `+${event.hearts} ${event.hearts === 1 ? 'HEART' : 'HEARTS'}`
+          : event.reward === 'shield' ? 'BOMB SHIELD' : 'OVERDRIVE +5s';
+        const rewardDetail = event.reward === 'hearts'
+          ? 'RESTORES LOST HEALTH'
+          : event.reward === 'shield' ? 'BLOCKS THE NEXT BOMB' : '2X PICKUP SCORE / STRONGER MAGNET / HALF REPEL COST';
+        const color = event.reward === 'hearts' ? '#ff9cad' : event.reward === 'shield' ? '#9effe1' : '#e2b7ff';
+        this.burst(event.x, event.y, event.reward === 'hearts' && event.hearts === 2 ? 22 : 16, color);
+        this.collectionRing(event.x, event.y, event.reward === 'hearts' ? 0xff718f : event.reward === 'shield' ? 0x7bffe0 : 0xc697ff);
+        this.floatingText(event.x, event.y - 36, rewardTitle, color, 13);
+        this.floatingText(event.x, event.y - 19, rewardDetail, color, 10);
+        if (event.reward === 'hearts' && event.hearts === 2) this.cameras.main.shake(130, 0.0016);
         break;
       }
       case 'target':
@@ -946,13 +1136,22 @@ export class GameScene extends Phaser.Scene {
         this.floatingText(event.x, event.y - 32, `GOAL ${event.number}  +${event.points}`, '#aaffdf');
         break;
       case 'damage':
-        this.avatarHurtRemaining = 0.5;
-        this.audio.play(event.shieldConsumed ? 'shield' : 'hit');
-        if (event.shieldConsumed) this.burst(event.x, event.y, 11, '#8effe4');
-        else this.burst(event.x, event.y, 9, '#ff7187');
-        this.collectionRing(event.x, event.y, event.shieldConsumed ? 0x8effe4 : 0xff7187);
-        if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) this.cameras.main.shake(90, 0.0023);
-        this.cameras.main.flash(75, 255, 115, 133, false);
+        if (event.shieldConsumed) {
+          this.avatarHurtRemaining = 0.34;
+          this.audio.play('shield');
+          this.shieldShatter(event.x, event.y);
+          this.burst(event.x, event.y, 13, '#8effe4');
+          this.collectionRing(event.x, event.y, 0x8effe4);
+          if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) this.cameras.main.shake(100, 0.0028);
+          this.cameras.main.flash(80, 128, 255, 220, false);
+        } else {
+          this.avatarHurtRemaining = 0.76;
+          this.avatarRespawnRemaining = BALANCE.player.magnetReplacementSeconds;
+          this.playerAvatar.setVisible(false);
+          this.audio.play('explosion');
+          this.magnetExplosion(event.x, event.y);
+          this.cameras.main.flash(130, 255, 161, 100, false);
+        }
         break;
       case 'energy-empty': this.audio.play('empty'); this.floatingText(event.x, event.y - 44, 'ENERGY LOW', '#ff987e'); break;
       case 'repulse-pulse': this.audio.play('repel'); this.pulseRing(event.x, event.y); break;
@@ -973,6 +1172,61 @@ export class GameScene extends Phaser.Scene {
       const distance = 24 + (index % 3) * 9;
       this.spark(x, y, 0.52 + (index % 3) * 0.13, color, Math.cos(angle) * distance, Math.sin(angle) * distance);
     }
+  }
+
+  private magnetExplosion(x: number, y: number): void {
+    const flash = this.add.graphics().setPosition(x, y).setDepth(27).setScale(0.35);
+    flash.fillStyle(0xff684f, 0.64).fillCircle(0, 0, 31);
+    flash.fillStyle(0xffb45f, 0.88).fillCircle(0, 0, 21);
+    flash.fillStyle(0xfff5ce, 0.98).fillCircle(0, 0, 9);
+    const flashTween = this.tweens.add({
+      targets: flash, scale: 3.2, alpha: 0, duration: 330, ease: 'Cubic.Out', onComplete: () => flash.destroy(),
+    });
+    this.trackTransient(flash, flashTween);
+
+    const shockwave = this.add.graphics().setPosition(x, y).setDepth(26).setScale(0.55);
+    shockwave.lineStyle(4, 0xffe7a6, 0.95).strokeCircle(0, 0, 20);
+    shockwave.lineStyle(2, 0xff815e, 0.84).strokeCircle(0, 0, 29);
+    const waveTween = this.tweens.add({
+      targets: shockwave, scale: 3.8, alpha: 0, duration: 520, ease: 'Cubic.Out', onComplete: () => shockwave.destroy(),
+    });
+    this.trackTransient(shockwave, waveTween);
+
+    const smoke = this.add.container(x, y).setDepth(25).setScale(0.5);
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (Math.PI * 2 * index) / 8;
+      const distance = 8 + (index % 3) * 4;
+      const radius = 10 + (index % 4) * 2;
+      const puff = this.add.circle(
+        Math.cos(angle) * distance,
+        Math.sin(angle) * distance,
+        radius,
+        index % 2 === 0 ? 0x34445e : 0x55475f,
+        0.58,
+      );
+      smoke.add(puff);
+    }
+    const smokeTween = this.tweens.add({
+      targets: smoke, scale: 2.8, alpha: 0, duration: 640, ease: 'Sine.Out', onComplete: () => smoke.destroy(),
+    });
+    this.trackTransient(smoke, smokeTween);
+
+    const colors = ['#fff4cc', '#ffd06f', '#ff875d', '#ff637d', '#c5faff'];
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const sparkCount = reducedMotion ? 12 : this.particles.length;
+    for (let index = 0; index < sparkCount; index += 1) {
+      const angle = (Math.PI * 2 * index) / sparkCount + ((this.effectCounter++ % 5) - 2) * 0.035;
+      const distance = 48 + (index % 4) * 18;
+      this.spark(
+        x,
+        y,
+        0.8 + (index % 3) * 0.18,
+        colors[index % colors.length]!,
+        Math.cos(angle) * distance,
+        Math.sin(angle) * distance - 8,
+      );
+    }
+    if (!reducedMotion) this.cameras.main.shake(220, 0.006);
   }
 
   private collectionRing(x: number, y: number, color: number): void {
@@ -1003,9 +1257,9 @@ export class GameScene extends Phaser.Scene {
     this.particleTweens.set(sprite, tween);
   }
 
-  private floatingText(x: number, y: number, value: string, color: string): void {
+  private floatingText(x: number, y: number, value: string, color: string, fontSize = 14): void {
     const text = this.add.text(x, y, value, {
-      fontFamily: 'Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color,
+      fontFamily: 'Arial, sans-serif', fontSize: `${fontSize}px`, fontStyle: 'bold', color,
       stroke: '#071021', strokeThickness: 3,
     }).setOrigin(0.5).setDepth(85);
     const tween = this.tweens.add({ targets: text, y: y - 28, alpha: 0, scale: 1.08, duration: 650, ease: 'Sine.Out', onComplete: () => text.destroy() });
@@ -1063,81 +1317,6 @@ export class GameScene extends Phaser.Scene {
     else if (this.mode === 'ad') this.focusBlocked = true;
   }
 
-  private installTestHooks(): void {
-    window.__MAGNET_TEST__ = {
-      finish: () => this.simulation.forceFinishForTest(),
-      retry: async () => {
-        if (this.mode === 'results') await this.returnThroughBreak('restart');
-        else throw new Error(`Cannot retry from ${this.mode}`);
-      },
-      start: (seed: number) => this.beginRun(seed),
-      snapshot: () => {
-        const trainer = this.simulation.entities[this.simulation.entities.length - 1]!;
-        const geometry = (sprite: Phaser.Physics.Arcade.Image) => {
-          const body = sprite.body as Phaser.Physics.Arcade.Body | Phaser.Physics.Arcade.StaticBody;
-          return { x: sprite.x, y: sprite.y, centerX: body.center.x, centerY: body.center.y, radius: body.halfWidth };
-        };
-        return ({
-        mode: this.mode,
-        running: this.simulation.state.running,
-        simTime: this.simulation.state.simTime,
-        activeEntities: this.simulation.activeEntityCount,
-        totalEntities: this.simulation.entities.length,
-        worldstepListeners: this.physics.world.listenerCount('worldstep'),
-        stepsLastFrame: this.lastPhysicsStepCount,
-        maximumStepsObserved: this.maximumStepsObserved,
-        bodies: this.physics.world.bodies.entries.length + this.physics.world.staticBodies.entries.length,
-        gameObjects: this.children.length,
-        audioTimers: this.audio.activeTimerCount,
-        energy: this.simulation.state.energy,
-        layout: { ...this.layout },
-        overdrive: {
-          active: this.simulation.features.overdriveActive,
-          charge: this.simulation.features.charge,
-          remaining: this.simulation.features.overdriveRemaining,
-          activations: this.simulation.features.activations,
-        },
-        goals: {
-          completed: this.simulation.features.completedGoals,
-          current: this.simulation.features.currentGoal,
-          deflections: this.simulation.features.deflections,
-          text: this.simulation.features.goalText(),
-        },
-        goldenTargetIndex: this.simulation.goldenTargetIndex,
-        playerX: this.simulation.player.x,
-        playerY: this.simulation.player.y,
-        avatarDisplayWidth: this.playerAvatar.displayWidth,
-        collisionGeometry: {
-          player: geometry(this.simulation.player),
-          targets: this.simulation.targets.map((target) => geometry(target.sprite)),
-          objects: this.simulation.entities.filter((entity) => entity.active).map((entity) => ({ kind: entity.kind, ...geometry(entity.sprite) })),
-        },
-        playerVelocity: { ...(this.simulation.player.body as Phaser.Physics.Arcade.Body).velocity },
-        playerAcceleration: { ...(this.simulation.player.body as Phaser.Physics.Arcade.Body).acceleration },
-        movementInput: this.controls.getMovement(),
-        touchDevice: this.controls.isTouchDevice,
-        worldPaused: this.physics.world.isPaused,
-        score: this.simulation.state.score,
-        health: this.simulation.state.health,
-        tutorialActive: this.simulation.state.tutorialActive,
-        tutorialStep: this.simulation.state.tutorialStep,
-        training: {
-          active: trainer.active,
-          x: trainer.sprite.x,
-          y: trainer.sprite.y,
-          velocityX: trainer.body.velocity.x,
-          velocityY: trainer.body.velocity.y,
-        },
-        activeBombs: this.simulation.entities.filter((entity) => entity.active && entity.kind === 'bomb').length,
-        gameplayActive: this.bridge.isGameplayActive,
-        breakPending: this.bridge.isBreakPending,
-        focusBlocked: this.focusBlocked,
-        documentHidden: document.hidden,
-      });
-      },
-    };
-  }
-
   private makeRunId(): string {
     const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
@@ -1152,7 +1331,6 @@ export class GameScene extends Phaser.Scene {
     this.controls?.destroy();
     this.simulation?.destroy();
     this.audio.dispose();
-    delete window.__MAGNET_TEST__;
     for (const tween of this.overlayTweens) tween.stop();
     this.clearTransientEffects();
     this.tweens.killAll();

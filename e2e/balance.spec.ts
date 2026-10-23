@@ -31,6 +31,9 @@ test('moving and defending beats camping across three reproducible 90-second sce
     const results = [];
     for (const policy of ['idle', 'collect']) for (const seed of [42, 77, 20261022]) {
       events = {}; held = false; movement = { x: 0, y: 0 }; minimumBombDistance = Infinity;
+      // A previous run can finish by pausing this shared Arcade world. Each
+      // scenario starts from a fresh simulation state on the same scene.
+      scene.physics.world.resume();
       sim.start(seed, 'balance-' + policy + '-' + seed, false);
       let firstDamage = null, maximumBombs = 0;
       for (let tick = 0; tick < 90 * 60 && sim.state.running; tick++) {

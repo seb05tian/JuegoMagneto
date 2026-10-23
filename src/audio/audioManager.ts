@@ -1,4 +1,4 @@
-export type SoundCue = 'coin' | 'crystal' | 'battery' | 'shield' | 'repel' | 'empty' | 'hit' | 'combo' | 'target' | 'overdrive' | 'goal' | 'record' | 'end' | 'click';
+export type SoundCue = 'coin' | 'crystal' | 'battery' | 'shield' | 'gift' | 'explosion' | 'repel' | 'empty' | 'hit' | 'combo' | 'target' | 'overdrive' | 'goal' | 'record' | 'end' | 'click';
 
 // A light C pentatonic motif with intentional rests; low notes mark every
 // fourth beat so the loop feels like a tune rather than a metronome.
@@ -14,6 +14,7 @@ export class AudioManager {
   private userMuted = false;
   private interruptionMuted = false;
   private readonly activeOscillators = new Set<OscillatorNode>();
+  private readonly activeBufferSources = new Set<AudioBufferSourceNode>();
 
   constructor(muted = false) {
     this.userMuted = muted;
@@ -66,11 +67,16 @@ export class AudioManager {
 
   play(cue: SoundCue, intensity = 1): void {
     if (!this.context || !this.master || this.isMuted()) return;
-    const patterns: Record<SoundCue, { notes: number[]; duration: number; wave: OscillatorType; gain: number }> = {
+    if (cue === 'explosion') {
+      this.playExplosionSound();
+      return;
+    }
+    const patterns: Record<Exclude<SoundCue, 'explosion'>, { notes: number[]; duration: number; wave: OscillatorType; gain: number }> = {
       coin: { notes: [783.99, 1174.66, 1567.98], duration: 0.15, wave: 'sine', gain: 0.17 },
       crystal: { notes: [659.25, 987.77, 1318.51, 1760], duration: 0.23, wave: 'sine', gain: 0.14 },
       battery: { notes: [392, 523.25, 659.25, 783.99], duration: 0.26, wave: 'triangle', gain: 0.14 },
       shield: { notes: [523.25, 698.46, 880, 1046.5], duration: 0.26, wave: 'sine', gain: 0.14 },
+      gift: { notes: [523.25, 783.99, 1046.5, 1567.98], duration: 0.3, wave: 'sine', gain: 0.16 },
       repel: { notes: [220, 110, 55], duration: 0.24, wave: 'sawtooth', gain: 0.105 },
       empty: { notes: [293.66, 220, 164.81], duration: 0.27, wave: 'triangle', gain: 0.1 },
       hit: { notes: [174.61, 116.54, 77.78], duration: 0.23, wave: 'square', gain: 0.1 },
@@ -95,6 +101,10 @@ export class AudioManager {
       try { oscillator.stop(); } catch { /* already ended */ }
     }
     this.activeOscillators.clear();
+    for (const source of this.activeBufferSources) {
+      try { source.stop(); } catch { /* already ended */ }
+    }
+    this.activeBufferSources.clear();
     void this.context?.close().catch(() => undefined);
     this.context = null;
     this.master = null;
@@ -106,6 +116,62 @@ export class AudioManager {
 
   private isMuted(): boolean {
     return this.userMuted || this.interruptionMuted;
+  }
+
+  private playExplosionSound(): void {
+    if (!this.context || !this.master) return;
+    const context = this.context;
+    const start = context.currentTime;
+    const duration = 0.68;
+    const sampleCount = Math.ceil(context.sampleRate * duration);
+    const buffer = context.createBuffer(1, sampleCount, context.sampleRate);
+    const samples = buffer.getChannelData(0);
+    for (let index = 0; index < sampleCount; index += 1) {
+      const fade = 1 - index / sampleCount;
+      samples[index] = (Math.random() * 2 - 1) * fade * fade;
+    }
+
+    const noise = context.createBufferSource();
+    const filter = context.createBiquadFilter();
+    const noiseGain = context.createGain();
+    noise.buffer = buffer;
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1900, start);
+    filter.frequency.exponentialRampToValueAtTime(120, start + 0.56);
+    noiseGain.gain.setValueAtTime(0.0001, start);
+    noiseGain.gain.exponentialRampToValueAtTime(0.19, start + 0.012);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(this.master);
+    this.activeBufferSources.add(noise);
+    noise.onended = () => {
+      this.activeBufferSources.delete(noise);
+      noise.disconnect();
+      filter.disconnect();
+      noiseGain.disconnect();
+    };
+    noise.start(start);
+    noise.stop(start + duration + 0.01);
+
+    const boom = context.createOscillator();
+    const boomGain = context.createGain();
+    boom.type = 'sine';
+    boom.frequency.setValueAtTime(112, start);
+    boom.frequency.exponentialRampToValueAtTime(36, start + 0.46);
+    boomGain.gain.setValueAtTime(0.0001, start);
+    boomGain.gain.exponentialRampToValueAtTime(0.22, start + 0.01);
+    boomGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.52);
+    boom.connect(boomGain);
+    boomGain.connect(this.master);
+    this.activeOscillators.add(boom);
+    boom.onended = () => {
+      this.activeOscillators.delete(boom);
+      boom.disconnect();
+      boomGain.disconnect();
+    };
+    boom.start(start);
+    boom.stop(start + 0.54);
   }
 
   private updateMasterGain(): void {

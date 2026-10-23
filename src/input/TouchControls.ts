@@ -5,7 +5,7 @@ import { touchControlLayout, type ArenaLayout } from '../game/layout';
 type PointerRole = 'move' | 'repel';
 
 export class TouchControls {
-  readonly isTouchDevice: boolean;
+  isTouchDevice: boolean;
   private readonly scene: Phaser.Scene;
   private readonly pointerRoles = new Map<number, PointerRole>();
   private readonly visual: Phaser.GameObjects.Graphics;
@@ -88,6 +88,7 @@ export class TouchControls {
   }
 
   setLayout(layout: ArenaLayout): void {
+    this.refreshDeviceDetection();
     this.layout = layout;
     this.positions = touchControlLayout(layout);
     this.moveLabel.setPosition(this.positions.joystickX, this.positions.labelY);
@@ -95,6 +96,15 @@ export class TouchControls {
     this.moveLabel.setFontSize(layout.portrait ? 14 : 10);
     this.repelLabel.setFontSize(layout.portrait ? 14 : 10);
     this.reset();
+    this.syncVisibility();
+  }
+
+  refreshDeviceDetection(): boolean {
+    const detected = this.detectTouchDevice();
+    if (detected === this.isTouchDevice) return false;
+    this.isTouchDevice = detected;
+    this.syncVisibility();
+    return true;
   }
 
   destroy(): void {
@@ -130,12 +140,30 @@ export class TouchControls {
   }
 
   private detectTouchDevice(): boolean {
-    return (navigator.maxTouchPoints ?? 0) > 0 ||
-      'ontouchstart' in window ||
-      window.matchMedia('(pointer: coarse)').matches;
+    const userAgent = navigator.userAgent;
+    const touchPoints = navigator.maxTouchPoints ?? 0;
+    const handheld = /Android|iPhone|iPad|iPod|Mobile|Tablet|Windows Phone/i.test(userAgent);
+    const iPadDesktopMode = /Macintosh/i.test(userAgent) && touchPoints > 1;
+    const touchFirstDevice = touchPoints > 0 && window.matchMedia('(pointer: coarse)').matches;
+
+    // `ontouchstart` can exist in desktop Chromium even when the device has no
+    // touch screen. Use device identity or a real coarse touch pointer instead.
+    return handheld || iPadDesktopMode || touchFirstDevice;
+  }
+
+  private syncVisibility(): void {
+    const visible = this.active && this.isTouchDevice;
+    this.visual.setVisible(visible);
+    this.moveLabel.setVisible(visible);
+    this.repelLabel.setVisible(visible);
+    if (this.isTouchDevice) this.drawControls();
   }
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
+    if (pointer.wasTouch && !this.isTouchDevice) {
+      this.isTouchDevice = true;
+      this.syncVisibility();
+    }
     if (!this.active || !this.isTouchDevice || this.pointerRoles.has(pointer.id)) return;
     const { x, y } = pointer;
     if (Phaser.Math.Distance.Between(x, y, this.positions.joystickX, this.positions.joystickY) < 95 && this.joystickPointer === null) {

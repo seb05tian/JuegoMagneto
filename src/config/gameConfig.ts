@@ -39,6 +39,8 @@ export const BALANCE = {
     inputDeadZone: 0.08,
     maxHealth: 3,
     invulnerabilitySeconds: 1.5,
+    magnetReplacementSeconds: 0.48,
+    deathSequenceSeconds: 0.95,
   },
   magnet: {
     attractionRadius: 175,
@@ -54,12 +56,12 @@ export const BALANCE = {
       crystal: 0.85,
       battery: 0.85,
       shield: 0.75,
+      gift: 0.95,
       bomb: 0.7,
       training: 0.7,
     },
     objectDragPerSecond: 1.2,
     repelledBombDragPerSecond: 0.22,
-    maximumVisibleLinks: 6,
   },
   energy: {
     maximum: 100,
@@ -73,12 +75,22 @@ export const BALANCE = {
     crystal: { radius: 14, lifetime: 20, score: 30, energy: 10 },
     battery: { radius: 15, lifetime: 20, energy: 25 },
     shield: { radius: 15, lifetime: 20 },
+    gift: { radius: 17, lifetime: 28 },
     bomb: {
-      radius: 16, lifetime: 16, autonomousSpeed: 35, minimumDriftSpeed: 28,
+      radius: 13, displaySize: 54, lifetime: 16, autonomousSpeed: 35, minimumDriftSpeed: 28,
       driftDragPerSecond: 0.1, launchSpread: 0.22, warning: 0.8, repelledWindow: 2,
     },
     target: { radius: 25, score: 50, displaySize: 76, hudClearance: 8, insetFromArenaEdge: 74, flashSeconds: 0.26 },
-    training: { radius: 16 },
+    training: { radius: 13 },
+  },
+  progression: {
+    bomb: {
+      scoreStep: 2500,
+      maxLevel: 6,
+      displaySizePerLevel: 4,
+      radiusPerLevel: 1,
+      attractionResponsePerLevel: 0.12,
+    },
   },
   spawn: {
     bombDistanceFromPlayer: 230,
@@ -96,15 +108,18 @@ export const BALANCE = {
     rewardForwardSpread: Math.PI / 3,
     rewardForwardMinimumSpeed: 30,
     rewardForwardAttempts: 10,
-    caps: { coin: 28, crystal: 6, bomb: 10, battery: 2, shield: 1, target: 4 },
+    caps: { coin: 28, crystal: 2, bomb: 10, battery: 2, shield: 1, gift: 1, target: 4 },
     firstCoinDelay: 0.35,
     coinTrailCount: 3,
     coinTrailSpacing: 44,
     coinTrailCurvature: 0.2,
     coinInterval: [1.8, 2.3],
-    crystalInterval: [7, 12],
+    firstCrystalDelay: [7, 9],
+    crystalInterval: [10, 14],
     batteryInterval: [12, 18],
     shieldInterval: [45, 60],
+    firstGiftDelay: 18,
+    giftInterval: [24, 34],
     bombsPerMinute: [
       { until: 30, rate: 6 },
       { until: 60, rate: 10 },
@@ -145,6 +160,8 @@ export const BALANCE = {
       crystalCharge: 3,
       targetCharge: 8,
       scoreMultiplier: 2,
+      giftSeconds: 5,
+      giftMaximumSeconds: 14,
     },
     goals: {
       coins: 12,
@@ -162,6 +179,6 @@ export const BALANCE = {
   },
 } as const;
 
-export type MagneticObjectKind = 'coin' | 'crystal' | 'battery' | 'shield' | 'bomb' | 'training';
-export type CollectibleKind = 'coin' | 'crystal' | 'battery' | 'shield';
+export type MagneticObjectKind = 'coin' | 'crystal' | 'battery' | 'shield' | 'gift' | 'bomb' | 'training';
+export type CollectibleKind = 'coin' | 'crystal' | 'battery' | 'shield' | 'gift';
 export type CosmeticId = 'classic' | 'electric' | 'gold' | 'trail' | 'pulse';

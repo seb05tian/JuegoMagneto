@@ -54,6 +54,16 @@ export class RunFeatures {
     return true;
   }
 
+  grantOverdrive(seconds: number): void {
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    this.charge = 0;
+    this.overdriveRemaining = Math.min(
+      BALANCE.runFeatures.overdrive.giftMaximumSeconds,
+      this.overdriveRemaining + seconds,
+    );
+    this.activations += 1;
+  }
+
   addCoin(): void {
     this.coins += 1;
   }

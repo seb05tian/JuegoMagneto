@@ -23,14 +23,30 @@ window.PokiSDK = {
   }
 };`;
 
+const pokiSdkUrl = 'https://game-cdn.poki.com/scripts/v2/poki-sdk.js';
+
 test('production plugin reports loading once and gates resume until commercial break resolves', async ({ page }) => {
-  await page.route('https://game-cdn.poki.com/scripts/v2/poki-sdk.js', (route) =>
+  let sdkRequests = 0;
+  const unexpectedExternalRequests: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.origin === 'http://127.0.0.1:4174') return;
+    if (request.url() === pokiSdkUrl) sdkRequests += 1;
+    else unexpectedExternalRequests.push(request.url());
+  });
+  await page.route(pokiSdkUrl, (route) =>
     route.fulfill({ status: 200, contentType: 'application/javascript', body: sdkStub }),
   );
   await page.goto('/');
   const canvas = page.locator('#game canvas');
   await canvas.waitFor();
   await page.waitForFunction(() => window.__MAGNET_POKI_EVENTS__?.includes('loadingFinished'));
+  expect(await page.evaluate(() => ({
+    testHook: '__MAGNET_TEST__' in window,
+    gameHook: '__MAGNET_GAME__' in window,
+  }))).toEqual({ testHook: false, gameHook: false });
+  expect(sdkRequests).toBe(1);
+  expect(unexpectedExternalRequests).toEqual([]);
   const initial = await page.evaluate(() => [...(window.__MAGNET_POKI_EVENTS__ ?? [])]);
   expect(initial.filter((event) => event === 'loadingStart')).toHaveLength(1);
   expect(initial.filter((event) => event === 'loadingFinished')).toHaveLength(1);

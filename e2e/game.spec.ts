@@ -45,6 +45,11 @@ type MagnetSnapshot = {
   health: number;
   tutorialActive: boolean;
   tutorialStep: string;
+  tutorialText: string;
+  touchDevice: boolean;
+  storageAvailable: boolean;
+  overlayTexts: string[];
+  instructionControls: { text: string; y: number; height: number } | null;
   training: { active: boolean; x: number; y: number; velocityX: number; velocityY: number };
   activeBombs: number;
   gameplayActive: boolean;
@@ -116,6 +121,19 @@ test('menu loads cleanly, keyboard movement and repulsion work, pause freezes an
   expect(consoleErrors).toEqual([]);
 });
 
+test('blocked browser storage is clearly disclosed before progress can be lost', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get: () => { throw new DOMException('Storage access blocked', 'SecurityError'); },
+    });
+  });
+  await ready(page);
+  const initial = await snapshot(page);
+  expect(initial.storageAvailable).toBe(false);
+  expect(initial.overlayTexts.join('\n')).toContain('PROGRESS WILL NOT BE SAVED IN THIS BROWSER');
+});
+
 test('training bomb stays harmless and the short tutorial responds to movement and repulsion', async ({ page }) => {
   await ready(page);
   await clickGamePoint(page, 480, 374);
@@ -155,7 +173,7 @@ test('scaled artwork keeps player, pickups and static target collision circles c
   for (const target of initial.targets) check(target, 25);
   const trainer = initial.objects.find((object) => object.kind === 'training');
   expect(trainer).toBeDefined();
-  check(trainer!, 16);
+  check(trainer!, 13);
   await expect.poll(async () => (await snapshot(page)).collisionGeometry.objects.some((object) => object.kind === 'coin'), { intervals: [20], timeout: 2500 }).toBe(true);
   const coin = (await snapshot(page)).collisionGeometry.objects.find((object) => object.kind === 'coin');
   expect(coin).toBeDefined();
@@ -301,6 +319,72 @@ test('mobile landscape keeps multitouch and portrait adapts to a tall playable a
   expect(bounds?.width).toBeGreaterThan(380);
   expect(bounds?.height).toBeGreaterThan(820);
   await context.close();
+});
+
+test('4:3 tablet landscape keeps the arena undistorted and shows usable touch and keyboard instructions', async ({ browser }) => {
+  const tabletContext = await browser.newContext({
+    viewport: { width: 1024, height: 768 },
+    deviceScaleFactor: 1,
+    isMobile: true,
+    hasTouch: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 14; SM-X900) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  });
+  const tablet = await tabletContext.newPage();
+  await ready(tablet);
+  await clickGamePoint(tablet, 765, 31);
+  await expect.poll(async () => (await snapshot(tablet)).mode).toBe('instructions');
+  const touchInstructions = await snapshot(tablet);
+  expect(touchInstructions.touchDevice).toBe(true);
+  expect(touchInstructions.overlayTexts.join('\n')).toContain('LEFT JOYSTICK / MOVE');
+  expect(touchInstructions.overlayTexts.join('\n')).toContain('HOLD ORANGE PULSE / REPEL');
+
+  const tabletCanvas = await tablet.locator('#game canvas').boundingBox();
+  if (!tabletCanvas) throw new Error('Tablet game canvas is missing');
+  expect(tabletCanvas.width / tabletCanvas.height).toBeCloseTo(16 / 9, 2);
+  expect(tabletCanvas.width).toBeLessThanOrEqual(1024);
+  expect(tabletCanvas.height).toBeLessThanOrEqual(768);
+  expect(tabletCanvas.x).toBeCloseTo((1024 - tabletCanvas.width) / 2, 1);
+  expect(tabletCanvas.y).toBeCloseTo((768 - tabletCanvas.height) / 2, 1);
+
+  await clickGamePoint(tablet, 480, 461);
+  await expect.poll(async () => (await snapshot(tablet)).mode).toBe('menu');
+  await tablet.evaluate(() => window.__MAGNET_TEST__!.start(42));
+  await expect.poll(async () => (await snapshot(tablet)).mode).toBe('playing');
+  expect((await snapshot(tablet)).tutorialText).toBe('MOVE WITH THE LEFT JOYSTICK');
+
+  const canvas = await tablet.locator('#game canvas').boundingBox();
+  if (!canvas) throw new Error('Tablet game canvas is missing');
+  const ratioX = canvas.width / 960;
+  const ratioY = canvas.height / 540;
+  const session = await tabletContext.newCDPSession(tablet);
+  await session.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [
+      { id: 1, x: canvas.x + 202 * ratioX, y: canvas.y + 378 * ratioY, radiusX: 18, radiusY: 18, force: 1 },
+      { id: 2, x: canvas.x + 790 * ratioX, y: canvas.y + 378 * ratioY, radiusX: 20, radiusY: 20, force: 1 },
+    ],
+  });
+  await tablet.waitForTimeout(360);
+  const touched = await snapshot(tablet);
+  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  expect(touched.playerX).toBeGreaterThan(480);
+  expect(touched.energy).toBeLessThan(100);
+  await tabletContext.close();
+
+  const keyboardPage = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  await ready(keyboardPage);
+  await clickGamePoint(keyboardPage, 765, 31);
+  await expect.poll(async () => (await snapshot(keyboardPage)).mode).toBe('instructions');
+  const keyboardInstructions = await snapshot(keyboardPage);
+  expect(keyboardInstructions.touchDevice).toBe(false);
+  expect(keyboardInstructions.overlayTexts.join('\n')).toContain('W / ↑ = UP; A / ← = LEFT');
+  expect(keyboardInstructions.overlayTexts.join('\n')).toContain('S / ↓ = DOWN; D / → = RIGHT');
+  expect(keyboardInstructions.overlayTexts.join('\n')).toContain('HOLD SPACE = PUSH; RELEASE = PULL');
+  expect(keyboardInstructions.overlayTexts.join('\n')).toContain('P OR ESC = PAUSE');
+  const controls = keyboardInstructions.instructionControls;
+  expect(controls).not.toBeNull();
+  expect(controls!.y + controls!.height).toBeLessThanOrEqual(245);
+  await keyboardPage.close();
 });
 
 test('portrait starts directly and simultaneous touch controls remain inside the screen', async ({ browser }) => {

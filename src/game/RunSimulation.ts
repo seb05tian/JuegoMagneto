@@ -15,6 +15,7 @@ import type { TouchControls } from '../input/TouchControls';
 
 export type SimEvent =
   | { type: 'collect'; kind: CollectibleKind; x: number; y: number; points: number; multiplier: number; streak: number }
+  | { type: 'gift-reward'; reward: 'hearts' | 'shield' | 'overdrive'; hearts: number; x: number; y: number }
   | { type: 'target'; x: number; y: number; points: number; golden: boolean }
   | { type: 'golden-target'; x: number; y: number }
   | { type: 'overdrive'; x: number; y: number }
@@ -75,8 +76,19 @@ const TEXTURE_BY_KIND: Record<MagneticObjectKind, string> = {
   crystal: 'item-crystal',
   battery: 'item-battery',
   shield: 'item-shield',
+  gift: 'item-gift',
   bomb: 'item-bomb',
   training: 'item-training',
+};
+
+const DISPLAY_SIZE_BY_KIND: Record<MagneticObjectKind, number> = {
+  coin: 72,
+  crystal: 72,
+  battery: 64,
+  shield: 64,
+  gift: 74,
+  bomb: BALANCE.objects.bomb.displaySize,
+  training: BALANCE.objects.bomb.displaySize,
 };
 
 const BODY_RADIUS_BY_KIND: Record<MagneticObjectKind, number> = {
@@ -84,6 +96,7 @@ const BODY_RADIUS_BY_KIND: Record<MagneticObjectKind, number> = {
   crystal: BALANCE.objects.crystal.radius,
   battery: BALANCE.objects.battery.radius,
   shield: BALANCE.objects.shield.radius,
+  gift: BALANCE.objects.gift.radius,
   bomb: BALANCE.objects.bomb.radius,
   training: BALANCE.objects.training.radius,
 };
@@ -93,6 +106,7 @@ const LIFETIME_BY_KIND: Partial<Record<MagneticObjectKind, number>> = {
   crystal: BALANCE.objects.crystal.lifetime,
   battery: BALANCE.objects.battery.lifetime,
   shield: BALANCE.objects.shield.lifetime,
+  gift: BALANCE.objects.gift.lifetime,
   bomb: BALANCE.objects.bomb.lifetime,
 };
 
@@ -101,7 +115,10 @@ const SCORE_BY_KIND: Partial<Record<CollectibleKind, number>> = {
   crystal: BALANCE.objects.crystal.score,
   battery: 0,
   shield: 0,
+  gift: 0,
 };
+
+type GiftReward = { reward: 'hearts' | 'shield' | 'overdrive'; hearts: number };
 
 function safeTrainingOffset(
   x: number,
@@ -125,8 +142,21 @@ function safeTrainingOffset(
   return { x: layout.width / 2, y: (layout.arenaTop + layout.worldBottom) / 2 };
 }
 
-function radiusFor(kind: MagneticObjectKind): number {
-  return BODY_RADIUS_BY_KIND[kind];
+function bombLevelForScore(score: number): number {
+  return Math.min(
+    BALANCE.progression.bomb.maxLevel,
+    Math.max(0, Math.floor(score / BALANCE.progression.bomb.scoreStep)),
+  );
+}
+
+function radiusFor(kind: MagneticObjectKind, bombLevel = 0): number {
+  if (kind !== 'bomb') return BODY_RADIUS_BY_KIND[kind];
+  return BODY_RADIUS_BY_KIND.bomb + bombLevel * BALANCE.progression.bomb.radiusPerLevel;
+}
+
+function displaySizeFor(kind: MagneticObjectKind, bombLevel = 0): number {
+  if (kind !== 'bomb') return DISPLAY_SIZE_BY_KIND[kind];
+  return DISPLAY_SIZE_BY_KIND.bomb + bombLevel * BALANCE.progression.bomb.displaySizePerLevel;
 }
 
 export class RunSimulation {
@@ -169,7 +199,10 @@ export class RunSimulation {
   private crystalAt = 7;
   private batteryAt = 12;
   private shieldAt = 45;
+  private giftAt: number = BALANCE.spawn.firstGiftDelay;
   private bombAt: number = BALANCE.spawn.bombCooldownSeconds;
+  private bombProgressionLevel = 0;
+  private gameOverTimer: Phaser.Time.TimerEvent | null = null;
   private previousRepelHeld = false;
   private nextEntityId = 0;
   private damageAppliedThisStep = false;
@@ -206,6 +239,7 @@ export class RunSimulation {
       crystal: BALANCE.spawn.caps.crystal,
       battery: BALANCE.spawn.caps.battery,
       shield: BALANCE.spawn.caps.shield,
+      gift: BALANCE.spawn.caps.gift,
       bomb: BALANCE.spawn.caps.bomb,
     };
     for (const kind of Object.keys(capacities) as Array<keyof typeof capacities>) {
@@ -215,6 +249,7 @@ export class RunSimulation {
     this.entities.push(training);
 
     for (const position of targetPositions(this.layout)) {
+      // Invisible texture keeps the static target body for scoring without drawing a board.
       const sprite = this.scene.physics.add.staticImage(position.x, position.y, 'target');
       sprite.setDisplaySize(BALANCE.objects.target.displaySize, BALANCE.objects.target.displaySize).setDepth(3);
       const body = sprite.body as Phaser.Physics.Arcade.StaticBody;
@@ -248,6 +283,8 @@ export class RunSimulation {
   }
 
   start(seed: number, runId: string, showTutorial: boolean): void {
+    this.gameOverTimer?.remove();
+    this.gameOverTimer = null;
     this.deactivateAllEntities();
     for (const target of this.targets) {
       target.flashRemaining = 0;
@@ -263,6 +300,7 @@ export class RunSimulation {
     this.state.runId = runId;
     this.state.simTime = 0;
     this.state.score = 0;
+    this.bombProgressionLevel = 0;
     this.state.health = BALANCE.player.maxHealth;
     this.state.energy = BALANCE.energy.starting;
     this.state.hasShield = false;
@@ -285,9 +323,10 @@ export class RunSimulation {
     this.previousRepelHeld = false;
     this.damageAppliedThisStep = false;
     this.coinAt = BALANCE.spawn.firstCoinDelay;
-    this.crystalAt = this.random.between(...BALANCE.spawn.crystalInterval);
+    this.crystalAt = this.random.between(...BALANCE.spawn.firstCrystalDelay);
     this.batteryAt = this.random.between(...BALANCE.spawn.batteryInterval);
     this.shieldAt = this.random.between(...BALANCE.spawn.shieldInterval);
+    this.giftAt = BALANCE.spawn.firstGiftDelay + this.random.between(0, 6);
     this.bombAt = BALANCE.spawn.bombCooldownSeconds;
     this.player.setTexture(`magnet-${this.cosmetic === 'electric' || this.cosmetic === 'gold' ? this.cosmetic : 'classic'}`);
     const startX = this.layout.width / 2;
@@ -358,15 +397,12 @@ export class RunSimulation {
   }
 
   get activeTimerCount(): number {
-    return 0;
-  }
-
-  /** Only exposed to the in-browser QA hook in development builds. */
-  forceFinishForTest(): void {
-    this.finishRun();
+    return this.gameOverTimer ? 1 : 0;
   }
 
   destroy(): void {
+    this.gameOverTimer?.remove();
+    this.gameOverTimer = null;
     this.scene.physics.world.off('worldstep', this.onWorldStep, this);
     this.playerOverlap.destroy();
     this.targetOverlap.destroy();
@@ -384,7 +420,7 @@ export class RunSimulation {
 
   private createEntity(kind: MagneticObjectKind): SimEntity {
     const sprite = this.scene.physics.add.image(0, 0, TEXTURE_BY_KIND[kind]);
-    sprite.setDisplaySize(64, 64).setDepth(kind === 'bomb' ? 12 : 8).setVisible(false).setActive(false);
+    sprite.setDisplaySize(displaySizeFor(kind), displaySizeFor(kind)).setDepth(kind === 'bomb' ? 12 : kind === 'gift' ? 13 : 8).setVisible(false).setActive(false);
     const body = sprite.body as Phaser.Physics.Arcade.Body;
     this.setCircleBody(body, radiusFor(kind), sprite.width, sprite.scaleX);
     body.setCollideWorldBounds(true).setBounce(kind === 'bomb' ? 0.55 : 0.32).setDrag(0, 0);
@@ -439,10 +475,11 @@ export class RunSimulation {
       entity.launchY = launch.y;
     }
     entity.sprite.setTexture(TEXTURE_BY_KIND[kind]).setPosition(x, y).setAlpha(0.95).setRotation(0);
-    entity.sprite.setDisplaySize(64, 64).setDepth(kind === 'bomb' ? 12 : kind === 'training' ? 11 : 8);
+    entity.sprite.setDisplaySize(displaySizeFor(kind, this.bombProgressionLevel), displaySizeFor(kind, this.bombProgressionLevel))
+      .setDepth(kind === 'bomb' ? 12 : kind === 'gift' ? 13 : kind === 'training' ? 11 : 8);
     entity.sprite.setVisible(true).setActive(true);
     entity.body.enable = true;
-    this.setCircleBody(entity.body, radiusFor(kind), entity.sprite.width, entity.sprite.scaleX);
+    this.setCircleBody(entity.body, radiusFor(kind, this.bombProgressionLevel), entity.sprite.width, entity.sprite.scaleX);
     entity.body.reset(x, y);
     entity.body.setVelocity(0, 0).setAcceleration(0, 0);
     entity.body.setCollideWorldBounds(true).setBounce(kind === 'bomb' ? 0.55 : 0.32);
@@ -488,7 +525,16 @@ export class RunSimulation {
         this.state.comboTimeRemaining = 0;
       }
       this.emit({ type: 'damage', x: this.player.x, y: this.player.y, health: this.state.health, shieldConsumed: impact.shieldConsumed });
-      if (impact.gameOver) this.finishRun();
+      if (impact.gameOver) {
+        this.state.running = false;
+        this.controls.setActive(false);
+        this.scene.physics.world.pause();
+        this.gameOverTimer?.remove();
+        this.gameOverTimer = this.scene.time.delayedCall(
+          BALANCE.player.deathSequenceSeconds * 1000,
+          () => this.finishRun(true),
+        );
+      }
       return;
     }
 
@@ -512,10 +558,12 @@ export class RunSimulation {
     }
     if (kind === 'battery') this.state.energy = Math.min(BALANCE.energy.maximum, this.state.energy + BALANCE.objects.battery.energy);
     if (kind === 'shield') this.state.hasShield = true;
+    const giftReward = kind === 'gift' ? this.grantGiftReward() : null;
     const x = entity.sprite.x;
     const y = entity.sprite.y;
     this.deactivateEntity(entity);
     this.emit({ type: 'collect', kind, x, y, points: award.points, multiplier: award.multiplier, streak: award.streak });
+    if (giftReward) this.emit({ type: 'gift-reward', ...giftReward, x, y });
     if (kind === 'coin') {
       this.features.addCoin();
       this.chargeOverdrive(BALANCE.runFeatures.overdrive.coinCharge, x, y);
@@ -545,6 +593,30 @@ export class RunSimulation {
     this.completeGoalIfReady(x, y);
   }
 
+  private grantGiftReward(): GiftReward {
+    const roll = this.random.next();
+    const requestedHearts = roll < 0.3 ? 1 : roll < 0.42 ? 2 : 0;
+    if (requestedHearts > 0) {
+      const hearts = Math.min(requestedHearts, BALANCE.player.maxHealth - this.state.health);
+      if (hearts > 0) {
+        this.state.health += hearts;
+        return { reward: 'hearts', hearts };
+      }
+    }
+
+    if (roll < 0.76 && !this.state.hasShield) {
+      this.state.hasShield = true;
+      return { reward: 'shield', hearts: 0 };
+    }
+    if (this.state.health < BALANCE.player.maxHealth && roll < 0.76) {
+      this.state.health += 1;
+      return { reward: 'hearts', hearts: 1 };
+    }
+
+    this.features.grantOverdrive(BALANCE.runFeatures.overdrive.giftSeconds);
+    return { reward: 'overdrive', hearts: 0 };
+  }
+
   private onWorldStep(deltaSeconds: number): void {
     if (!this.state.running || !Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return;
     const delta = Math.min(deltaSeconds, GAME.fixedStep * GAME.maxSubSteps);
@@ -558,6 +630,7 @@ export class RunSimulation {
     }
     this.state.comboTimeRemaining = this.scorer.timeRemaining(this.state.simTime);
     this.updateEnergyAndMovement(delta);
+    this.updateBombProgression();
     this.updateEntities(delta);
     this.updateTargets(delta);
     this.updateTutorial();
@@ -614,17 +687,21 @@ export class RunSimulation {
         continue;
       }
       if (entity.kind === 'coin') entity.sprite.setRotation(Math.sin(this.state.simTime * 2.5 + entity.id) * 0.11);
-      else if (entity.kind === 'crystal') entity.sprite.setRotation(Math.sin(this.state.simTime * 1.35 + entity.id) * 0.09);
+      else if (entity.kind === 'crystal') entity.sprite.setRotation(Math.sin(this.state.simTime * 1.8 + entity.id) * 0.12);
       else if (entity.kind === 'battery') entity.sprite.setRotation(Math.sin(this.state.simTime * 2 + entity.id) * 0.045);
       else if (entity.kind === 'shield') entity.sprite.setRotation(Math.sin(this.state.simTime * 1.8 + entity.id) * 0.07);
+      else if (entity.kind === 'gift') entity.sprite.setRotation(Math.sin(this.state.simTime * 2.2 + entity.id) * 0.08);
       else if (entity.kind === 'bomb') entity.sprite.setRotation(Math.sin(this.state.simTime * 3.2 + entity.id) * 0.09);
       entity.sprite.setAlpha(lifetime === undefined ? 1 : Math.min(1, (lifetime - entity.age) / 2 + 0.15));
       const polarity = this.state.repulsionActive ? 'repel' : 'attract';
+      const response = entity.kind === 'bomb' && polarity === 'attract'
+        ? BALANCE.magnet.response.bomb + this.bombProgressionLevel * BALANCE.progression.bomb.attractionResponsePerLevel
+        : objectResponse(entity.kind);
       const force = calculateMagneticAcceleration(
         { x: entity.sprite.x, y: entity.sprite.y },
         { x: this.player.x, y: this.player.y },
         polarity,
-        objectResponse(entity.kind),
+        response,
       );
       const forceMultiplier = this.features.overdriveActive ? BALANCE.runFeatures.overdrive.forceMultiplier : 1;
       const boostedForce = {
@@ -658,6 +735,18 @@ export class RunSimulation {
           this.completeGoalIfReady(entity.sprite.x, entity.sprite.y);
         }
       }
+    }
+  }
+
+  private updateBombProgression(): void {
+    const level = bombLevelForScore(this.state.score);
+    if (level === this.bombProgressionLevel) return;
+    this.bombProgressionLevel = level;
+    for (const entity of this.entities) {
+      if (!entity.active || entity.kind !== 'bomb') continue;
+      const size = displaySizeFor('bomb', level);
+      entity.sprite.setDisplaySize(size, size);
+      this.setCircleBody(entity.body, radiusFor('bomb', level), entity.sprite.width, entity.sprite.scaleX);
     }
   }
 
@@ -750,6 +839,10 @@ export class RunSimulation {
       if (!this.state.hasShield && this.countActive('shield') === 0) this.spawn('shield');
       this.shieldAt = time + this.random.between(...BALANCE.spawn.shieldInterval);
     }
+    if (time >= this.giftAt) {
+      this.spawn('gift');
+      this.giftAt = time + this.random.between(...BALANCE.spawn.giftInterval);
+    }
     if (canArmRegularBomb(time) && time >= this.bombAt) {
       this.spawn('bomb');
       this.bombAt = time + 60 / bombRateAt(time);
@@ -776,7 +869,7 @@ export class RunSimulation {
     if (kind === 'shield' && this.state.hasShield) return false;
     const entity = this.entities.find((candidate) => candidate.kind === kind && !candidate.active);
     if (!entity) return false;
-    const position = this.findSpawnPosition(kind, radiusFor(kind));
+    const position = this.findSpawnPosition(kind, radiusFor(kind, this.bombProgressionLevel));
     if (!position) return false;
     this.activateEntity(entity, kind, position.x, position.y, kind === 'bomb');
     return true;
@@ -792,7 +885,7 @@ export class RunSimulation {
     const margin = radius + 26;
     const bomb = kind === 'bomb';
     for (let attempt = 0; attempt < BALANCE.spawn.maxPlacementAttempts; attempt += 1) {
-      const rewardRing = kind === 'coin' || kind === 'crystal';
+      const rewardRing = kind === 'coin' || kind === 'crystal' || kind === 'gift';
       const velocity = (this.player.body as Phaser.Physics.Arcade.Body).velocity;
       const offset = rewardRing ? rewardSpawnOffset(this.state.simTime, velocity.x, velocity.y, this.random.next(), this.random.next(), attempt) : null;
       const bombAngle = bomb ? this.random.between(0, Math.PI * 2) : 0;
@@ -817,14 +910,16 @@ export class RunSimulation {
     }
     for (const other of this.entities) {
       if (!other.active) continue;
-      const required = requiredSpawnSeparation(kind, radius, other.kind, radiusFor(other.kind));
+      const required = requiredSpawnSeparation(kind, radius, other.kind, radiusFor(other.kind, this.bombProgressionLevel));
       if (Phaser.Math.Distance.Between(x, y, other.sprite.x, other.sprite.y) < required) return false;
     }
     return true;
   }
 
-  private finishRun(): void {
-    if (!this.state.running) return;
+  private finishRun(afterDeathSequence = false): void {
+    if (!this.state.running && !afterDeathSequence) return;
+    this.gameOverTimer?.remove();
+    this.gameOverTimer = null;
     this.state.running = false;
     this.emit({
       type: 'game-over',

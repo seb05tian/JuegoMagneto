@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import type { CosmeticId } from '../config/gameConfig';
 
 type CanvasDraw = (context: CanvasRenderingContext2D) => void;
-export type MagnetMood = 'idle' | 'attract' | 'repel' | 'hurt' | 'celebrate';
+export type MagnetMood = 'idle' | 'attract' | 'repel' | 'hurt' | 'celebrate' | 'worried' | 'serious';
 export type MagnetSkin = Extract<CosmeticId, 'classic' | 'electric' | 'gold'>;
 
 const METAL = {
@@ -71,9 +71,19 @@ function drawEye(context: CanvasRenderingContext2D, x: number, y: number, pupilX
 function drawMagnet(context: CanvasRenderingContext2D, skin: MagnetSkin, mood: MagnetMood): void {
   const isGold = skin === 'gold';
   const isElectric = skin === 'electric';
-  const red = isGold ? ['#fff09e', '#ffad54', '#cc5c3b'] as const : METAL.red;
+  const red = isGold ? ['#fff09e', '#ffad54', '#cc5c3b'] as const
+    : isElectric ? ['#f4d4ff', '#bd71ff', '#6839b5'] as const : METAL.red;
   const blue = isGold ? ['#fff4b0', '#f5d45c', '#af762c'] as const : isElectric ? ['#e5ffff', '#72fbff', '#3a8fe5'] as const : METAL.blue;
-  const glowColor = mood === 'repel' ? 'rgba(255,117,90,.43)' : isGold ? 'rgba(255,194,86,.38)' : 'rgba(79,229,255,.38)';
+  const glowColor = mood === 'repel' ? 'rgba(255,117,90,.43)'
+    : mood === 'serious' ? 'rgba(255,91,104,.32)'
+      : mood === 'worried' ? 'rgba(255,194,86,.3)'
+        : isGold ? 'rgba(255,194,86,.38)' : isElectric ? 'rgba(107,234,255,.5)' : 'rgba(79,229,255,.38)';
+
+  // A slightly wider, shorter silhouette keeps the magnet from reading as tall and narrow.
+  context.save();
+  context.translate(64, 64);
+  context.scale(1, 0.92);
+  context.translate(-64, -64);
 
   const halo = context.createRadialGradient(64, 64, 14, 64, 64, 63);
   halo.addColorStop(0, glowColor);
@@ -169,6 +179,28 @@ function drawMagnet(context: CanvasRenderingContext2D, skin: MagnetSkin, mood: M
     context.moveTo(49, 60); context.lineTo(59, 62);
     context.moveTo(69, 62); context.lineTo(79, 60);
     context.stroke();
+  } else if (mood === 'serious') {
+    drawEye(context, 55, 70, -0.2, 2.4);
+    drawEye(context, 73, 70, 0.2, 2.4);
+    context.strokeStyle = '#102541';
+    context.lineWidth = 3;
+    context.lineCap = 'round';
+    context.beginPath();
+    context.moveTo(47, 59); context.lineTo(60, 64);
+    context.moveTo(68, 64); context.lineTo(81, 59);
+    context.moveTo(56, 87); context.quadraticCurveTo(64, 82, 72, 87);
+    context.stroke();
+  } else if (mood === 'worried') {
+    drawEye(context, 55, 69, 0, -0.6);
+    drawEye(context, 73, 69, 0, -0.6);
+    context.strokeStyle = '#163353';
+    context.lineWidth = 2.6;
+    context.lineCap = 'round';
+    context.beginPath();
+    context.moveTo(48, 61); context.quadraticCurveTo(54, 54, 61, 60);
+    context.moveTo(67, 60); context.quadraticCurveTo(74, 54, 80, 61);
+    context.moveTo(57, 87); context.quadraticCurveTo(64, 82, 71, 87);
+    context.stroke();
   } else if (mood === 'repel') {
     drawEye(context, 55, 69, -0.5);
     drawEye(context, 73, 69, -0.5);
@@ -221,53 +253,87 @@ function drawMagnet(context: CanvasRenderingContext2D, skin: MagnetSkin, mood: M
     context.stroke();
     context.shadowBlur = 0;
   }
+  context.restore();
 }
 
 function drawCoin(context: CanvasRenderingContext2D): void {
-  const glow = context.createRadialGradient(32, 32, 9, 32, 32, 31);
-  glow.addColorStop(0, 'rgba(255,223,135,.5)'); glow.addColorStop(1, 'rgba(255,163,39,0)');
+  const glow = context.createRadialGradient(32, 32, 12, 32, 32, 34);
+  glow.addColorStop(0, 'rgba(255,225,121,.3)'); glow.addColorStop(0.58, 'rgba(255,181,45,.13)'); glow.addColorStop(1, 'rgba(255,163,39,0)');
   context.fillStyle = glow; context.fillRect(0, 0, 64, 64);
-  context.save(); context.shadowColor = 'rgba(255,175,42,.78)'; context.shadowBlur = 9;
-  context.beginPath(); context.arc(32, 32, 23, 0, Math.PI * 2);
-  context.fillStyle = fillLinear(context, 10, 10, 54, 54, ['#fff8cb', '#e9a735', '#9c541c']); context.fill();
+  const disc = (x: number, y: number, radius: number): void => {
+    context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fill();
+  };
+  // Offset lower disc gives the coin a metallic sidewall without an inked contour.
+  context.fillStyle = fillLinear(context, 12, 12, 52, 57, ['#ffd65c', '#d78718', '#87400e']);
+  disc(32, 33.8, 22.8);
+  context.fillStyle = fillLinear(context, 12, 8, 50, 53, ['#fff7b0', '#ffc52f', '#d87810']);
+  disc(32, 31.5, 21.8);
+  context.save();
+  context.beginPath(); context.arc(32, 31.5, 21.8, 0, Math.PI * 2); context.clip();
+  const lowerShade = context.createLinearGradient(0, 29, 0, 54);
+  lowerShade.addColorStop(0, 'rgba(130,62,9,0)'); lowerShade.addColorStop(1, 'rgba(130,62,9,.26)');
+  context.fillStyle = lowerShade; context.fillRect(9, 29, 46, 25);
   context.restore();
-  context.lineWidth = 2.3; context.strokeStyle = '#fff0a8'; context.stroke();
-  context.beginPath(); context.arc(32, 32, 18.5, 0, Math.PI * 2);
-  context.strokeStyle = 'rgba(255,244,184,.94)'; context.lineWidth = 1.3; context.stroke();
-  context.beginPath(); context.arc(32, 32, 15.4, 0, Math.PI * 2);
-  context.strokeStyle = 'rgba(117,64,25,.64)'; context.lineWidth = 1.1; context.stroke();
-  for (let index = 0; index < 12; index += 1) {
-    const angle = index * Math.PI / 6;
-    context.beginPath(); context.moveTo(32 + Math.cos(angle) * 20, 32 + Math.sin(angle) * 20);
-    context.lineTo(32 + Math.cos(angle) * 22, 32 + Math.sin(angle) * 22);
-    context.strokeStyle = 'rgba(255,255,220,.72)'; context.lineWidth = 1; context.stroke();
-  }
+
+  // Embossed center star stays crisp and readable without an inked outline.
   context.save(); context.translate(32, 32); context.rotate(-0.12);
-  context.fillStyle = '#a85d20'; context.strokeStyle = 'rgba(255,241,168,.72)'; context.lineWidth = 1;
-  context.beginPath();
-  context.moveTo(0, -10); context.lineTo(2.7, -3.1); context.lineTo(10, -2.7); context.lineTo(4.5, 1.5);
-  context.lineTo(6.4, 9); context.lineTo(0, 5); context.lineTo(-6.4, 9); context.lineTo(-4.5, 1.5);
-  context.lineTo(-10, -2.7); context.lineTo(-2.7, -3.1); context.closePath(); context.fill(); context.stroke();
+  const star = (radius: number): void => {
+    context.beginPath();
+    for (let index = 0; index < 10; index += 1) {
+      const angle = -Math.PI / 2 + index * Math.PI / 5;
+      const pointRadius = index % 2 === 0 ? radius : radius * 0.46;
+      const x = Math.cos(angle) * pointRadius;
+      const y = Math.sin(angle) * pointRadius;
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.closePath();
+  };
+  context.translate(0, 0.9); star(12.2); context.fillStyle = '#a95c10'; context.fill();
+  context.translate(0, -1.2); star(12.2); context.fillStyle = '#fff1a0'; context.fill();
   context.restore();
-  context.fillStyle = 'rgba(255,255,255,.86)'; context.beginPath(); context.ellipse(22, 17, 5, 2.3, -0.65, 0, Math.PI * 2); context.fill();
+  context.fillStyle = 'rgba(255,255,255,.92)'; context.beginPath(); context.ellipse(21, 15, 5.2, 2.1, -0.65, 0, Math.PI * 2); context.fill();
 }
 
 function drawCrystal(context: CanvasRenderingContext2D): void {
-  const glow = context.createRadialGradient(32, 32, 5, 32, 32, 31);
-  glow.addColorStop(0, 'rgba(124,244,255,.52)'); glow.addColorStop(1, 'rgba(50,122,255,0)');
+  const glow = context.createRadialGradient(32, 32, 8, 32, 32, 34);
+  glow.addColorStop(0, 'rgba(167,255,255,.46)'); glow.addColorStop(0.52, 'rgba(69,220,255,.24)'); glow.addColorStop(1, 'rgba(50,122,255,0)');
   context.fillStyle = glow; context.fillRect(0, 0, 64, 64);
-  context.save(); context.shadowColor = 'rgba(65,221,255,.8)'; context.shadowBlur = 10;
-  context.beginPath(); context.moveTo(32, 6); context.lineTo(50, 22); context.lineTo(44, 46); context.lineTo(32, 57); context.lineTo(20, 46); context.lineTo(14, 22); context.closePath();
-  context.fillStyle = fillLinear(context, 14, 8, 51, 53, ['#f4ffff', '#66e7ff', '#2577d9']); context.fill();
-  context.lineWidth = 2; context.strokeStyle = '#e1ffff'; context.stroke(); context.restore();
-  context.beginPath(); context.moveTo(32, 8); context.lineTo(33, 51); context.lineTo(18, 23); context.closePath();
-  context.fillStyle = 'rgba(255,255,255,.58)'; context.fill();
-  context.beginPath(); context.moveTo(33, 20); context.lineTo(48, 24); context.lineTo(42, 45); context.closePath();
-  context.fillStyle = 'rgba(23,76,189,.34)'; context.fill();
-  context.beginPath(); context.moveTo(22, 46); context.lineTo(32, 34); context.lineTo(42, 46); context.lineTo(32, 56); context.closePath();
-  context.fillStyle = 'rgba(135,250,255,.42)'; context.fill();
-  context.strokeStyle = 'rgba(255,255,255,.85)'; context.lineWidth = 1.8;
-  context.beginPath(); context.moveTo(25, 18); context.lineTo(21, 25); context.stroke();
+  const traceStar = (outerRadius: number, innerRadius: number): void => {
+    context.beginPath();
+    for (let index = 0; index < 10; index += 1) {
+      const angle = -Math.PI / 2 + index * Math.PI / 5;
+      const radius = index % 2 === 0 ? outerRadius : innerRadius;
+      const x = Math.cos(angle) * radius;
+      const y = Math.sin(angle) * radius;
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.closePath();
+  };
+  context.save(); context.translate(32, 32); context.translate(0, 1.2);
+  traceStar(27, 13);
+  context.fillStyle = '#1269bd'; context.fill();
+  context.restore();
+  context.save();
+  context.translate(32, 32);
+  context.rotate(0.08);
+  traceStar(27, 12);
+  context.fillStyle = fillLinear(context, -19, -25, 20, 25, ['#ffffff', '#6ff5ff', '#2588ee']);
+  context.fill();
+  context.save();
+  traceStar(27, 12);
+  context.clip();
+  context.beginPath();
+  context.moveTo(0, -26); context.lineTo(4, -5); context.lineTo(0, 0); context.lineTo(-5, -7); context.closePath();
+  context.fillStyle = 'rgba(255,255,255,.52)';
+  context.fill();
+  context.beginPath();
+  context.moveTo(0, 0); context.lineTo(25, 8); context.lineTo(11, 10); context.lineTo(4, 25); context.closePath();
+  context.fillStyle = 'rgba(7,91,190,.28)';
+  context.fill();
+  context.restore();
+  context.restore();
+  context.fillStyle = 'rgba(255,255,255,.94)';
+  context.beginPath(); context.ellipse(23, 15, 4.5, 2, -0.65, 0, Math.PI * 2); context.fill();
 }
 
 function drawBattery(context: CanvasRenderingContext2D): void {
@@ -306,6 +372,57 @@ function drawShield(context: CanvasRenderingContext2D): void {
   context.closePath(); context.fill();
 }
 
+function drawGift(context: CanvasRenderingContext2D): void {
+  const glow = context.createRadialGradient(32, 32, 5, 32, 32, 35);
+  glow.addColorStop(0, 'rgba(255,224,138,.7)');
+  glow.addColorStop(0.52, 'rgba(186,120,255,.34)');
+  glow.addColorStop(1, 'rgba(142,74,255,0)');
+  context.fillStyle = glow;
+  context.fillRect(0, 0, 64, 64);
+
+  context.save();
+  context.shadowColor = 'rgba(209,153,255,.9)';
+  context.shadowBlur = 12;
+  roundedRect(context, 12, 27, 40, 28, 7);
+  context.fillStyle = fillLinear(context, 12, 27, 52, 55, ['#edceff', '#a765e9', '#5631a8']);
+  context.fill();
+  context.lineWidth = 2;
+  context.strokeStyle = '#f5ddff';
+  context.stroke();
+  context.restore();
+
+  roundedRect(context, 9, 20, 46, 13, 5);
+  context.fillStyle = fillLinear(context, 10, 20, 54, 33, ['#fff1b0', '#ffbf57', '#dc7642']);
+  context.fill();
+  context.lineWidth = 1.8;
+  context.strokeStyle = '#fff0c4';
+  context.stroke();
+
+  roundedRect(context, 28, 21, 8, 33, 3);
+  context.fillStyle = '#6af2ed';
+  context.fill();
+  roundedRect(context, 13, 36, 38, 6, 2.5);
+  context.fill();
+
+  context.save();
+  context.translate(32, 19);
+  context.strokeStyle = '#8cf7f1';
+  context.fillStyle = '#bbfff4';
+  context.lineWidth = 3;
+  context.beginPath();
+  context.ellipse(-6, -5, 7, 4, -0.55, 0, Math.PI * 2);
+  context.ellipse(6, -5, 7, 4, 0.55, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.restore();
+
+  context.fillStyle = '#fff5c5';
+  context.beginPath();
+  context.arc(20, 47, 2, 0, Math.PI * 2);
+  context.arc(44, 47, 2, 0, Math.PI * 2);
+  context.fill();
+}
+
 function drawBomb(context: CanvasRenderingContext2D): void {
   const glow = context.createRadialGradient(32, 35, 7, 32, 35, 32);
   glow.addColorStop(0, 'rgba(255,93,111,.54)'); glow.addColorStop(1, 'rgba(255,50,77,0)');
@@ -326,32 +443,6 @@ function drawBomb(context: CanvasRenderingContext2D): void {
   context.fillStyle = '#ffd4dc'; context.font = 'bold 12px system-ui'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText('!', 31, 40);
 }
 
-function drawTarget(context: CanvasRenderingContext2D, golden = false): void {
-  const glowStart = golden ? 'rgba(255,215,107,.52)' : 'rgba(255,132,105,.44)';
-  const glowEnd = golden ? 'rgba(255,190,61,0)' : 'rgba(255,70,94,0)';
-  const glow = context.createRadialGradient(48, 48, 8, 48, 48, 47);
-  glow.addColorStop(0, glowStart); glow.addColorStop(1, glowEnd);
-  context.fillStyle = glow; context.fillRect(0, 0, 96, 96);
-  context.save(); context.shadowColor = golden ? 'rgba(255,201,78,.82)' : 'rgba(255,86,101,.62)'; context.shadowBlur = golden ? 15 : 10;
-  context.beginPath(); context.arc(48, 49, 38, 0, Math.PI * 2);
-  context.fillStyle = '#182943'; context.fill(); context.lineWidth = 3; context.strokeStyle = golden ? '#ffe193' : '#94b0cd'; context.stroke(); context.restore();
-  context.beginPath(); context.arc(48, 48, 33, 0, Math.PI * 2); context.fillStyle = '#dcecf4'; context.fill();
-  context.beginPath(); context.arc(48, 48, 27, 0, Math.PI * 2); context.fillStyle = golden ? '#f5ad37' : '#ee5c70'; context.fill();
-  context.beginPath(); context.arc(48, 48, 19, 0, Math.PI * 2); context.fillStyle = golden ? '#fff0bd' : '#f3e1d4'; context.fill();
-  context.beginPath(); context.arc(48, 48, 11, 0, Math.PI * 2); context.fillStyle = golden ? '#f7b942' : '#ed6574'; context.fill();
-  context.beginPath(); context.arc(48, 48, 5.5, 0, Math.PI * 2); context.fillStyle = '#ffda7d'; context.fill();
-  context.strokeStyle = golden ? 'rgba(255,242,200,.85)' : 'rgba(255,255,255,.64)'; context.lineWidth = 1.2;
-  for (const angle of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
-    context.beginPath(); context.moveTo(48 + Math.cos(angle) * 39, 48 + Math.sin(angle) * 39);
-    context.lineTo(48 + Math.cos(angle) * 45, 48 + Math.sin(angle) * 45); context.stroke();
-  }
-  roundedRect(context, 34, 81, 28, 13, 5);
-  context.fillStyle = '#142943'; context.fill();
-  context.strokeStyle = golden ? 'rgba(255,244,190,.96)' : 'rgba(255,222,172,.9)'; context.lineWidth = 1; context.stroke();
-  context.fillStyle = golden ? '#ffe58b' : '#ffe0a0'; context.font = 'bold 9px system-ui, sans-serif';
-  context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(golden ? '100' : '50', 48, 87.5);
-}
-
 function drawSpark(context: CanvasRenderingContext2D): void {
   const glow = context.createRadialGradient(16, 16, 1, 16, 16, 16);
   glow.addColorStop(0, '#ffffff'); glow.addColorStop(0.18, '#d8ffff'); glow.addColorStop(0.48, 'rgba(80,217,255,.74)'); glow.addColorStop(1, 'rgba(56,132,255,0)');
@@ -368,14 +459,6 @@ function drawArenaBackground(context: CanvasRenderingContext2D): void {
   const core = context.createRadialGradient(470, 264, 28, 480, 270, 440);
   core.addColorStop(0, 'rgba(58,119,160,.23)'); core.addColorStop(0.52, 'rgba(33,61,117,.10)'); core.addColorStop(1, 'rgba(4,8,21,.7)');
   context.fillStyle = core; context.fillRect(0, 0, 960, 540);
-
-  // Wide, low-contrast orbit lanes replace the former full-field graph paper.
-  context.save();
-  context.strokeStyle = 'rgba(121,185,220,.055)'; context.lineWidth = 1;
-  for (let index = 0; index < 4; index += 1) {
-    context.beginPath(); context.ellipse(480, 268, 208 + index * 91, 106 + index * 59, -0.14, 0.18 + index * 0.14, Math.PI * 1.88); context.stroke();
-  }
-  context.restore();
 
   // Fine circuit etching stays along the rim, leaving the center quiet for play.
   context.save();
@@ -411,12 +494,6 @@ function drawPortraitArenaBackground(context: CanvasRenderingContext2D): void {
   core.addColorStop(0, 'rgba(58,119,160,.22)'); core.addColorStop(0.6, 'rgba(33,61,117,.09)'); core.addColorStop(1, 'rgba(4,8,21,.66)');
   context.fillStyle = core; context.fillRect(0, 0, 540, 1200);
   context.save();
-  context.strokeStyle = 'rgba(121,185,220,.052)'; context.lineWidth = 1;
-  for (let index = 0; index < 5; index += 1) {
-    context.beginPath(); context.ellipse(270, 590, 174 + index * 62, 240 + index * 138, -0.12, 0.18 + index * 0.12, Math.PI * 1.88); context.stroke();
-  }
-  context.restore();
-  context.save();
   context.strokeStyle = 'rgba(91,178,206,.14)'; context.lineWidth = 1.2;
   for (const y of [170, 346, 820, 1002]) {
     context.beginPath(); context.moveTo(18, y); context.lineTo(58, y); context.lineTo(80, y + 24); context.stroke();
@@ -445,14 +522,15 @@ export function createGameArt(manager: Phaser.Textures.TextureManager): void {
   addCanvasTexture(manager, 'arena-background', 960, 540, drawArenaBackground);
   addCanvasTexture(manager, 'arena-background-portrait', 540, 1200, drawPortraitArenaBackground, 1.5);
   const skins: readonly MagnetSkin[] = ['classic', 'electric', 'gold'];
-  const moods: readonly MagnetMood[] = ['idle', 'attract', 'repel', 'hurt', 'celebrate'];
+  const moods: readonly MagnetMood[] = ['idle', 'attract', 'repel', 'hurt', 'celebrate', 'worried', 'serious'];
   for (const skin of skins) for (const mood of moods) {
     addCanvasTexture(manager, magnetTextureKey(skin, mood), 128, 128, (context) => drawMagnet(context, skin, mood));
   }
-  addCanvasTexture(manager, 'item-coin', 64, 64, drawCoin);
-  addCanvasTexture(manager, 'item-crystal', 64, 64, drawCrystal);
+  addCanvasTexture(manager, 'item-coin', 64, 64, drawCoin, 4);
+  addCanvasTexture(manager, 'item-crystal', 64, 64, drawCrystal, 4);
   addCanvasTexture(manager, 'item-battery', 64, 64, drawBattery);
   addCanvasTexture(manager, 'item-shield', 64, 64, drawShield);
+  addCanvasTexture(manager, 'item-gift', 64, 64, drawGift);
   addCanvasTexture(manager, 'item-bomb', 64, 64, drawBomb);
   addCanvasTexture(manager, 'item-training', 64, 64, (context) => {
     drawBomb(context);
@@ -460,7 +538,8 @@ export function createGameArt(manager: Phaser.Textures.TextureManager): void {
     context.strokeStyle = 'rgba(87,246,255,.98)'; context.lineWidth = 3; context.setLineDash([4, 4]); context.stroke(); context.setLineDash([]);
     context.fillStyle = '#a8ffff'; context.font = 'bold 12px system-ui'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText('i', 32, 39);
   });
-  addCanvasTexture(manager, 'target', 96, 96, drawTarget);
-  addCanvasTexture(manager, 'target-gold', 96, 96, (context) => drawTarget(context, true));
+  // Keep transparent textures for target collision sprites; targets are no longer drawn.
+  addCanvasTexture(manager, 'target', 96, 96, () => {});
+  addCanvasTexture(manager, 'target-gold', 96, 96, () => {});
   addCanvasTexture(manager, 'spark', 32, 32, drawSpark);
 }

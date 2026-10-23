@@ -69,3 +69,11 @@ La inspección manual en Chromium muestra una diferencia clara en tamaño y pers
 El imán se redujo de 72 a 62 unidades de presentación. Aceleración/frenado pasan a 2100/2600 para iniciar, girar y detenerse con mayor precisión, conservando velocidad máxima 230. Las bombas repelidas conservan impulso durante su ventana válida: arrastre 0,22/s frente al normal 1,2/s, sin impulsos extra.
 
 La revisión de una jugada completa destapó dos fallos reales que las pruebas anteriores no cubrían: las hitboxes usaban dimensiones lógicas en lugar de las texturas Canvas dobles y las dianas no pertenecían al grupo de colisión. Se corrigieron los centros/radios y el registro de dianas. Una prueba nueva usa la repulsión por teclado y la física real para empujar una bomba hasta una diana, comprobar 50 puntos exactos y consumirla una sola vez. Así, la mejora táctica está comprobada además de presentarse visualmente.
+
+### Tercera pasada: controles, lectura y movimiento
+
+La inspección de la partida en escritorio mostró que Chromium exponía `ontouchstart` aunque el equipo no fuera móvil. El joystick y el botón de repulsión cubrían parte de la arena, así que la detección ahora se basa en dispositivos móviles/tabletas, iPadOS y punteros táctiles reales. El teclado de escritorio conserva WASD, flechas, espacio y pausa.
+
+Las curvas, flechas y anillos del campo sugerían una mira que el juego nunca tuvo: la repulsión empuja en dirección opuesta al imán y los tiros dependen de la posición del jugador. Se quitaron esas guías y los anillos decorativos del menú y el fondo. La trayectoria corta de una bomba repelida permanece porque sigue su velocidad real. Las monedas y los peligros comunican la fuerza por su movimiento.
+
+La aceleración, el frenado y el límite de velocidad del jugador se mantienen en 2100, 2600 y 230 para conservar el control preciso de la pasada anterior. El sprite ahora inclina la dirección horizontal con suavidad y acompaña la velocidad con un rebote y una deformación leves; la hitbox sigue separada y sin cambios.

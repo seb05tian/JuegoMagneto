@@ -21,10 +21,10 @@ npm.cmd run preview
 ## Controls
 
 - **Desktop:** WASD or arrow keys to move, hold Space to repel, Escape or P to pause.
-- **Touch:** left virtual joystick to move, hold the orange pulse to repel, pause in the upper-right corner. Multitouch is enabled.
+- **Phones and tablets:** left virtual joystick to move, hold the orange pulse to repel, pause in the upper-right corner. Multitouch is enabled.
 - Landscape keeps the authored 16:9 arena. Portrait builds a tall arena with controls clear of the playfield; rotating during a run pauses safely.
 
-Attraction is always active unless repulsion is being held with enough energy. Follow curved magnetic lines to gather rewards, steer clear of bombs, and repel a bomb toward a target. Targets pay 50 points; a gold target appears after 30 seconds, rotates every 20 seconds, and pays 100.
+Attraction is always active unless repulsion is being held with enough energy. Collect rewards as they move toward the magnet, avoid bombs, and position yourself so a repelled bomb travels toward a target. Targets pay 50 points; a gold target appears after 30 seconds, rotates every 20 seconds, and pays 100.
 
 Coins, crystals, and successful target hits charge a six-second Overdrive. It makes magnetic forces stronger, reduces repulsion drain, doubles pickup points, and restores 25 energy. Three run-only goals reward coin routes, distinct bomb deflections, and target hits with fixed score and energy.
 

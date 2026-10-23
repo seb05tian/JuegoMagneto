@@ -32,16 +32,20 @@ Energy starts and caps at **100**. A fresh press can use any positive charge for
 | Crystal | 14 | 20 s | 30 base points and 10 energy |
 | Battery | 15 | 20 s | 25 energy |
 | Shield | 15 | 20 s | Absorbs one hit; one equipped |
-| Bomb | 16 | 16 s | 1 health damage |
+| Bomb | 13–19 | 16 s | 1 health damage |
 | Target | 25 | Static | 50 fixed points for a recently repelled bomb |
 
 Bombs launch at **28–35** speed along a fixed heading toward the player's position at warning time, with ±0.22 radian variation. The warning arrow announces that heading for **0.8 s**; it never homes after launch. Spawns use a **230–310-unit** ring and keep the minimum 230-unit safety distance. Bombs remain eligible for a target for **2 s** after effective repulsion. Regular bombs remain disabled during the first **10 s**. Difficulty rates now target **6/min** to 30 s, **10/min** to 60 s, **14/min** to 120 s, **18/min** to 180 s, **22/min** to 300 s, then a stable **26/min**. This replaces 4/7/10/13/16/18: the old randomly directed, heavily damped bombs let an idle player survive 90 seconds unharmed in all three benchmark seeds.
 
-Active caps are **28 coins**, **6 crystals**, **10 bombs**, **2 batteries**, **1 shield**, and **4 static targets**. Spawned objects maintain a radius-based separation and avoid target zones; an unsafe spawn is skipped.
+Bombs begin at **54 display units** and **13 collision-radius units**. Every **2,500 run-score points**, they gain **4 display units**, **1 collision-radius unit**, and **0.12 attraction response** while the player is pulling. Growth caps after **6 tiers** (score **15,000**); repulsion response remains **0.7** so the player's push control stays predictable.
+
+Active caps are **28 coins**, **2 crystals**, **10 bombs**, **2 batteries**, **1 shield**, **1 gift**, and **4 static targets**. Spawned objects maintain a radius-based separation and avoid target zones; an unsafe spawn is skipped.
 
 During the first **8 seconds**, coins and crystals use a seeded spawn ring **82–148 units** from the player, inside the **175-unit** attraction radius. After that lesson, rewards appear **140–225 units** away and favor a 120-degree cone ahead of movement. Remaining placement attempts spread around the player to recover near walls. This turns rewards into short routes worth chasing instead of making standing still the best strategy. Batteries, shields, and bombs retain their safe arena placement rules. The upper target row is positioned **115 units** from the top so its 76-unit artwork clears the 69-unit HUD panel with 8 units of air.
 
 Coins are placed in curved trails of up to **3**, separated by **44 units**. The first trail appears at **0.35 s**, with later trails every **1.8–2.3 s** instead of one isolated coin every 0.7–1.3 s. Every member independently respects caps, wall/HUD clearance, target exclusion and object separation; a blocked trail ends safely. The spawn ring defines the first coin; later members lead outward along the route. Crystals remain individual.
+
+Pickup timing keeps the rarer rewards distinct: crystals first appear after **7–9 s**, then every **10–14 s**, with at most **2 active**. Batteries appear every **12–18 s**; shields every **45–60 s** when one is not already held or active. The first gift appears after **18–24 s**, then every **24–34 s**.
 
 ## Pickups and progression
 
@@ -64,7 +68,7 @@ Coins are placed in curved trails of up to **3**, separated by **44 units**. The
 - The training bomb is static while idle, does not collide for damage, and is placed ahead of the player's first movement. If the player crowds it, it moves to a nearby **100-unit** offset. It is removed after reaching **20 units/s** of outward motion. Browser testing showed the initial 30-unit/s threshold could become unreachable as the magnetic force falls with distance; 20 keeps the lesson brief while requiring a visible push. It does not count toward bomb caps or difficulty.
 - A collision callback happens before Phaser's fixed-step event, so the internal invulnerability timer is seeded with one extra fixed tick and ends at exactly the specified **1.5 s** after accounting for the same collision step.
 - The avatar is a presentation-only sprite with a **62-unit** display box, reduced from 72 (about 14% smaller); its Arcade collision body remains the authored **18-unit radius**. Expression, bob, tilt, and squash do not move the hitbox. Dynamic collision offsets now use the real doubled Canvas texture dimensions; static target circles use world pixels. All circles are centered on their artwork, with pickups retaining their specified world radii after reuse.
-- Up to **six** curved magnetic links use traveling arrowheads: cyan inward for rewards, coral inward for dangerous bombs, orange outward during repulsion. Faint radial flow lines communicate the default direction between pickups, and a short orange tracer identifies a valid bomb shot.
-- Attraction acceleration changed from the GDD's **1100** to **1400** and repulsion from **1750** to **2400**. Browser review showed that the old forces were hard to read because the GDD's quadratic falloff is weak near the edge of the field. The stronger acceleration makes trajectories and bomb pushes visible sooner while retaining the same falloff, radii, velocity caps, response coefficients, and energy rates.
+- The avatar leans and squashes subtly in response to its actual velocity; the physics acceleration and braking stay unchanged. Repelled bombs use a short straight trail tied to their real velocity. No guide line predicts or implies an aim direction.
+- Attraction acceleration changed from the GDD's **1100** to **1400** and repulsion from **1750** to **2400**. Browser review showed that the old forces were hard to read because the GDD's quadratic falloff is weak near the edge of the field. The stronger acceleration makes trajectories and bomb pushes visible sooner while retaining the same falloff, radii, velocity caps, and energy rates. Bomb attraction response now advances with run-score tiers as detailed above.
 - The pickup ring is limited to coins/crystals; it does not place hazards closer, alter their first-10-second protection, or bypass object separation. Four static targets remain in perimeter zones; only the upper pair moved down to clear the HUD. Scoring remains fixed at **50**.
 - The menu theme uses a local 16-step pentatonic melody with rests and low accents rather than a single-note metronomic loop. SFX remain procedural Web Audio and need no remote asset requests.
